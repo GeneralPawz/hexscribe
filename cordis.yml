@@ -101,6 +101,11 @@
     apiKey: !!js process.env.HEXSCRIBE_API_KEY
     language: de
 
+# Everything worth keeping after a run finishes: transcripts, how long each one
+# took, and what went wrong. One SQLite file in the platform's data directory
+# (%LOCALAPPDATA%\hexscribe on Windows) -- set `path` to put it elsewhere.
+- name: './src/store.ts'
+
 # Transcriptions that outlive the request that asked for them. An hour of audio
 # is minutes of NPU; holding an HTTP connection open for it means no progress,
 # and nothing at all if the tab closes. Remove this and `background=true` is
@@ -110,6 +115,23 @@
     retainMinutes: 60
 
 - name: './src/jobs-http.ts'
+
+# Where "it happened" becomes "it is remembered". Remove this and jobs still
+# run, they are just forgotten when they finish.
+- name: './src/history.ts'
+
+# History, settings and the danger zone over HTTP.
+- name: './src/store-http.ts'
+
+# Keeps a small Opus copy of uploaded audio, so a transcript stays playable
+# after the upload is deleted. A run read from disk stores nothing -- the file
+# is already there. Remove this and transcripts survive without their audio.
+- name: './src/audio-store.ts'
+
+# Reading audio where it already lives, instead of uploading a copy of it to a
+# server on the same laptop. This is a filesystem API, so it refuses to load
+# when the server is bound anywhere but loopback without an api key.
+- name: './src/local-files.ts'
 
 # The voice library over HTTP, for front-ends that let a person type a name.
 # Separate from `voices.ts` so the library works headless; it injects `serve`,

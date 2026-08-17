@@ -18,9 +18,9 @@ try {
         # The server is the same composition with a different front-end enabled;
         # scripts/serve.mjs sets the environment cordis.yml gates on.
         $rest = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
-        & node --import tsx (Join-Path $PSScriptRoot 'scripts/serve.mjs') @rest
+        & node --disable-warning=ExperimentalWarning --import tsx (Join-Path $PSScriptRoot 'scripts/serve.mjs') @rest
     } else {
-        & node --import tsx (Join-Path $PSScriptRoot 'node_modules/@deepseek-ai/cordis/bin.js') @args
+        & node --disable-warning=ExperimentalWarning --import tsx (Join-Path $PSScriptRoot 'node_modules/@deepseek-ai/cordis/bin.js') @args
     }
     exit $LASTEXITCODE
 } finally {

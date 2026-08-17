@@ -28,15 +28,21 @@ export function activeIndex(segments, time, tolerance = 0.05) {
   return active
 }
 
-export function createPlayer(audio, file) {
-  const url = URL.createObjectURL(file)
+/**
+ * @param source a `File` the user just dropped, or a URL to play from the
+ *   server — a stored run has no File, only a recording the server can stream.
+ */
+export function createPlayer(audio, source) {
+  // Only a blob URL needs revoking; a server URL was never ours to release.
+  const owned = typeof source !== 'string'
+  const url = owned ? URL.createObjectURL(source) : source
   let revoked = false
 
   audio.src = url
   audio.hidden = false
 
   const revoke = () => {
-    if (revoked) return
+    if (revoked || !owned) return
     revoked = true
     URL.revokeObjectURL(url)
   }

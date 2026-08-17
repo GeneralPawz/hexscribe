@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -114,6 +115,14 @@ class Worker:
             "timing": timing,
             "profiles": profiles,
         }
+
+    def compress_audio(self, params: dict) -> dict:
+        """Re-encode audio small enough to be worth keeping."""
+        started = time.perf_counter()
+        result = audio_mod.compress_to_opus(params["path"], params["out"])
+        result["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
+        _log(f"compressed {result['seconds']}s to {result['bytes'] / 1024:.0f} kB")
+        return result
 
     def load(self, _params: dict) -> dict:
         engine = self.engine()
@@ -210,6 +219,8 @@ class Worker:
                     result = self.diarize(params)
                 elif method == "diarize_utterances":
                     result = self.diarize_utterances(params)
+                elif method == "compress_audio":
+                    result = self.compress_audio(params)
                 else:
                     raise ValueError(f"unknown method {method!r}")
                 _emit({"id": request_id, "result": result})

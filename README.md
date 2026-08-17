@@ -85,6 +85,13 @@ await client.audio.transcriptions.create({
 | `POST /v1/audio/translations` | same, into English |
 | `GET /v1/models` | `whisper-1` plus every loaded engine, by name |
 | `GET /health` | liveness, loaded engines, NPU status |
+| `GET /v1/runs` | recorded runs; `?id=` for one, with its transcript and log |
+| `GET /v1/runs/audio?id=` | the stored recording for a run |
+| `POST /v1/runs/{delete,audio/detach}` | forget a run, or its audio |
+| `GET /v1/files?path=` | browse this machine for a recording (loopback only) |
+| `GET /v1/files/audio?path=` | stream one, with range requests |
+| `GET,POST /v1/settings` | global defaults and database stats |
+| `POST /v1/store/{clear-audio,reset}` | the danger zone |
 | `GET /v1/jobs` | background runs; `?id=` for one, with its transcript when done |
 | `POST /v1/jobs/forget` | drop a finished job early |
 | `GET /v1/voices` | the named voices this machine knows |
@@ -183,6 +190,11 @@ cordis.yml ── the application, as configuration
    ├── diarize-utterances.ts  registers engine `utterances` (default)
    ├── diarize-sherpa.ts      registers engine `sherpa` ──inject──> diarize, worker
    ├── speakers.ts        listens on `transcript/finalize`, attaches speakers
+   ├── store.ts           service `store`: the SQLite database
+   ├── store-http.ts      history, settings, danger zone ──inject──> serve, store
+   ├── history.ts         records finished runs ──inject──> jobs, store
+   ├── audio-store.ts     keeps a small Opus copy ──inject──> jobs, store, worker
+   ├── local-files.ts     service `localFiles`: reading audio where it lives
    ├── jobs.ts            service `jobs`: runs that outlive their request
    ├── jobs-http.ts       those over HTTP ──inject──> serve, jobs
    ├── voices.ts          service `voices`: names, and the prints that find them
@@ -273,6 +285,103 @@ did nothing for the reported case: the two halves were 14.16 s and 15.28 s apart
 the next window starts where the seek put it, so a boundary *inside* one sentence
 routinely shows a second of "silence". The tolerance is 1.5 s because that is
 what the artefact measures, not because it sounded right.
+
+### The shell: a rail, a history, and settings
+
+The application name lives in the left rail, not above the transcript — the main
+pane is for the document, and a title bar repeating "hexscribe" over every one of
+them was decoration. The rail is a column of icons that widens on hover or focus,
+and it **overlays** rather than pushing the page, because a layout that reflows
+whenever the pointer crosses it is a layout that fidgets.
+
+It holds what is true across the app rather than about the thing on screen: a new
+transcript, past runs, and settings pinned at the bottom with the NPU badge.
+More will follow; that is what the rail is for.
+
+**Jobs** lists finished runs from the database, newest first, each with its
+duration, utterance count and a ♪ when the audio was kept. Clicking one brings it
+back into the main pane — the same rendering as a fresh run, deliberately, so
+there is one transcript view and not two — and opens the right-hand aside with
+what the run cost: when, how long, how fast, which engine, and its log. That is
+also where a recording is disposed of, because "this one is 10 MB and I have the
+file on disk anyway" is a judgement about *that* run and not a global setting.
+
+**Settings** is a modal, and a `<dialog>` rather than a div and a scrim: the
+browser already knows how to trap focus, close on Escape and paint a backdrop.
+It carries the defaults for new runs (they populate the form, so setting one
+here changes what every run starts as), storage, and a danger zone.
+
+### Everything worth keeping
+
+Transcribing an hour costs four minutes of NPU. Throwing the result away when
+the tab closes makes you pay it again, so every run is recorded: the transcript,
+how long it took and how fast, what was asked for, what went wrong, and
+optionally the audio.
+
+One SQLite file, through **`node:sqlite`** — which ships with Node and needs no
+native build. That matters more here than usual: this is a `win_arm64` machine,
+where a package needing a compiler is a package that does not install.
+
+It lives where the platform keeps application data — `%LOCALAPPDATA%\hexscribe`
+on Windows, `~/Library/Application Support` on macOS, `$XDG_DATA_HOME` elsewhere
+— and **not** next to the code, because a checkout is a thing you delete and
+re-clone and the transcripts are not. Local rather than roaming on Windows,
+deliberately: audio blobs have no business being synced to a domain profile.
+Backing it up is copying one file.
+
+The danger zone has two buttons because they are two different regrets:
+
+| | |
+|---|---|
+| **Delete stored audio** | forgets the recordings, keeps every transcript. One click — the expensive part is untouched. |
+| **Delete the whole database** | keeps nothing. Enabled only after typing *delete everything*, and the server refuses the request without the same words in the body. |
+
+A tool that records what people said had better make it obvious how to unrecord
+it.
+
+### Reading audio where it already lives
+
+Uploading a 180 MB interview to a server on the same laptop copies it for no
+reason: through the browser's memory, over a socket to itself, into a temporary
+file, and then deletes it. **Choose a file on this machine** transcribes it where
+it lies. Measured on that interview:
+
+| | uploaded | in place |
+|---|---|---|
+| sent to the server | 189 MB | **557 bytes** |
+| before the job started | ~4 s | **0.12 s** |
+| left to play back afterwards | nothing | the file itself |
+
+The browser cannot help with this — a file input hands over a name and bytes and
+deliberately never a path — so the server does the browsing and the picker is a
+view of it. That is a filesystem API over HTTP, so it is fenced:
+
+- **Loopback only, or an api key.** Bound to a real interface with neither, the
+  plugin refuses to load and says which of the two to fix.
+- **Media extensions only**, for both listing and streaming. It can find
+  recordings; it cannot read `id_rsa`.
+- **Read only.** No route there writes, moves or deletes anything.
+
+Playback is ranged, so seeking inside an hour-long MP3 fetches the window it
+needs rather than the file.
+
+### Keeping the audio, small enough to keep
+
+An uploaded recording is gone the moment the run finishes, which leaves a
+transcript whose clickable timestamps have nothing to click into. So uploads are
+re-encoded to 16 kHz mono Opus and stored beside the transcript. Measured: 33.8 s
+becomes **96 kB** — about 23 kbps — so an hour-long interview is roughly 10 MB
+against the 180 MB it arrived as. Keeping the original bytes was never an option
+at that size, and at speech bitrates the difference is inaudible.
+
+A run read from disk stores nothing: the file is already there and the run
+remembers where. And from the run panel a stored recording can be dropped and the
+run pointed at a file on disk instead — the two halves of one intent, for
+somebody reclaiming space who still wants to hear it.
+
+This all hangs on ordering: `job/settled` is emitted with `ctx.parallel` and
+awaited **before** the upload is deleted. `emit` would have deleted the file out
+from under the listener that wanted to keep it.
 
 ### Work that outlives the request
 
@@ -761,6 +870,7 @@ src/serve/            HTTP front-end: http, router, auth, upload, openai, routes
 src/ui/               browser front-end: plugin + public/ (html, css, js modules)
 scripts/ui-check.mjs  end-to-end UI check over the DevTools Protocol
 scripts/reattach-check.mjs  proves a job survives the page that started it
+scripts/shell-check.mjs     rail, history, settings, and the file picker
 py/hexscribe_worker/  worker: audio.py, qnn.py, whisper_qnn.py, diarize.py,
                       diarize_utterances.py, worker.py
 py/pyproject.toml     ARM64 venv (uv), pinned for win_arm64 wheel reality
@@ -787,6 +897,9 @@ models/               downloaded assets (gitignored)
 - [x] Name a speaker once and have the voice recognised in later recordings
 - [x] Background jobs with measured progress, surviving a closed tab, and
       Windows notifications
+- [x] A database of every run: transcripts, timings, logs and audio
+- [x] Left rail with run history, and a settings modal with a danger zone
+- [x] Transcribe files in place from disk, without uploading a copy
 - [ ] Speaker *naming* — the labels are per-recording; recognising the same
       person across files needs an enrolled embedding per speaker, which the
       embedding model already produces

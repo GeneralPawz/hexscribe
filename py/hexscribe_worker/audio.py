@@ -94,6 +94,54 @@ def load_audio(path: str | Path, *, on_damage=None) -> np.ndarray:
     return np.concatenate(chunks).astype(np.float32, copy=False)
 
 
+#: Speech at 16 kHz mono, which is all the model ever hears anyway.
+#:
+#: Measured: 33.8 s of speech becomes 96 kB, about 23 kbps. An hour-long
+#: interview that arrived as a 180 MB MP3 comes to roughly 10 MB — the
+#: difference between keeping the audio and not being able to afford to.
+OPUS_BITRATE = 24000
+
+
+def compress_to_opus(source: str | Path, destination: str | Path, bitrate: int = OPUS_BITRATE) -> dict:
+    """Re-encode any audio to mono 16 kHz Opus in an Ogg container.
+
+    Opus rather than keeping the original bytes: the point of storing audio is
+    to be able to play a transcript back, not to archive a master. At speech
+    bitrates the difference is inaudible and the size difference is an order of
+    magnitude, which decides whether storing it is practical at all.
+    """
+    import av
+
+    samples = load_audio(source)
+    seconds = len(samples) / SAMPLE_RATE
+
+    container = av.open(str(destination), mode="w", format="ogg")
+    try:
+        stream = container.add_stream("libopus", rate=SAMPLE_RATE)
+        stream.layout = "mono"
+        stream.bit_rate = bitrate
+
+        frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format="fltp", layout="mono")
+        frame.rate = SAMPLE_RATE
+        # Opus wants integer samples; the resampler also chunks the frame into
+        # sizes the encoder accepts, which a single hour-long frame is not.
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+        for resampled in resampler.resample(frame):
+            for packet in stream.encode(resampled):
+                container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+    finally:
+        container.close()
+
+    return {
+        "path": str(destination),
+        "seconds": round(seconds, 3),
+        "bytes": Path(destination).stat().st_size,
+        "mime": "audio/ogg",
+    }
+
+
 # --- mel filterbank (slaney scale + slaney norm, as librosa/whisper use) ---
 
 

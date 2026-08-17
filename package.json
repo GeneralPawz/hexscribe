@@ -7,8 +7,8 @@
   "scripts": {
     "start": "node --import tsx node_modules/@deepseek-ai/cordis/bin.js",
     "doctor": "node --import tsx node_modules/@deepseek-ai/cordis/bin.js --doctor",
-    "serve": "node --import tsx scripts/serve.mjs",
-    "test": "node --import tsx --test test/*.test.ts",
+    "serve": "node --disable-warning=ExperimentalWarning --import tsx scripts/serve.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

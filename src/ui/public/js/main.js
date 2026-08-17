@@ -1,6 +1,22 @@
 /** Wiring: picks up a file, asks the API, shows the result. */
 
-import { getHealth, getJob, getModels, hasJobs, transcribe } from './api.js'
+import {
+  detachAudio,
+  getHealth,
+  getJob,
+  getModels,
+  getRun,
+  getRuns,
+  getSettings,
+  hasJobs,
+  hasLocalFiles,
+  transcribe,
+} from './api.js'
+import { closeModal, openModal } from './modal.js'
+import { describeRun, mountRail } from './rail.js'
+import { settingsModal } from './settings.js'
+import { filePicker } from './picker.js'
+import { runPanel } from './panel-run.js'
 import { $, clock, humanSize, show } from './dom.js'
 import {
   notificationsSupported,
@@ -42,6 +58,8 @@ const els = {
   merge: $('#merge'),
   notify: $('#notify'),
   notifyField: $('#notify-field'),
+  browseRow: $('#browse-row'),
+  browse: $('#browse'),
   submit: $('#submit'),
   status: $('#status'),
   error: $('#error'),
@@ -75,9 +93,34 @@ const HINT = 'or click to choose · anything FFmpeg can open'
  */
 const STATES = {
   waiting: { energy: 0.32, tone: 'idle', title: () => 'Drop audio here', hint: () => HINT },
-  armed: { energy: 0.28, tone: 'idle', title: (file) => `${file.name} (${humanSize(file.size)})`, hint: () => HINT },
-  busy: { energy: 1.0, tone: 'busy', snap: true, title: () => 'Transcribing…', hint: (_file, note) => note },
-  done: { energy: 0.25, tone: 'done', title: (file) => `${file.name} (${humanSize(file.size)})`, hint: (_file, note) => note },
+  armed: {
+    energy: 0.28,
+    tone: 'idle',
+    title: (about) => (about ? `${about.name} (${about.detail})` : 'Drop audio here'),
+    hint: (about) => (about?.local ? 'on disk · nothing will be uploaded' : HINT),
+  },
+  busy: { energy: 1.0, tone: 'busy', snap: true, title: () => 'Transcribing…', hint: (_about, note) => note },
+  done: {
+    energy: 0.25,
+    tone: 'done',
+    title: (about) => about?.name ?? 'Finished',
+    hint: (_about, note) => note,
+  },
+}
+
+/**
+ * What the drop zone is currently about.
+ *
+ * There are three ways to have audio in hand — dropped, chosen on disk, or a run
+ * loaded from history — and the zone's label has to cope with all of them.
+ * Reading `selected.name` directly was fine while an upload was the only kind,
+ * and threw the moment a file on disk finished transcribing.
+ */
+function subject() {
+  if (selected) return { name: selected.name, detail: humanSize(selected.size), local: false }
+  if (chosen) return { name: chosen.name, detail: humanSize(chosen.bytes), local: true }
+  if (viewing) return { name: viewing.name, detail: 'from history', local: viewing.source === 'disk' }
+  return null
 }
 
 /**
@@ -91,8 +134,19 @@ const STATES = {
 const INVITED_ENERGY = 0.62
 
 let selected = null
+/**
+ * A file on this machine, chosen instead of uploaded.
+ *
+ * Mutually exclusive with `selected`: one of them is the audio for the next
+ * run, and letting both be set would leave which one wins to reading order.
+ */
+let chosen = null
 /** Whether this server can run the work off the request. Probed once, at boot. */
 let canBackground = false
+let canBrowse = false
+let rail = null
+/** The stored run on screen, if the main pane is showing history rather than a new run. */
+let viewing = null
 let ticker = null
 let player = null
 let audioSeconds = 0
@@ -119,8 +173,9 @@ function setState(name, note = '') {
   stateName = name
   els.drop.dataset.state = name
   els.drop.dataset.tone = state.tone
-  els.dropTitle.textContent = state.title(selected, note)
-  els.dropHint.textContent = state.hint(selected, note)
+  const about = subject()
+  els.dropTitle.textContent = state.title(about, note)
+  els.dropHint.textContent = state.hint(about, note)
   applyMood()
 }
 
@@ -146,9 +201,12 @@ function setError(message) {
 
 function selectFile(file) {
   if (!file) return
+  chosen = null
   selected = file
   els.submit.disabled = false
   setError(null)
+  viewing = null
+  rail?.setActive(null)
   // A new file is what makes the last result stale, so this is where the
   // finished green goes back to the accent colour.
   setState('armed')
@@ -161,6 +219,32 @@ function selectFile(file) {
   els.audio.addEventListener('loadedmetadata', () => {
     audioSeconds = Number.isFinite(els.audio.duration) ? els.audio.duration : 0
   }, { once: true })
+}
+
+/**
+ * A file named rather than uploaded.
+ *
+ * No `File` object exists for it, so there is nothing to hand the player until
+ * the server streams it back — which it can, from the same path the transcriber
+ * will read. That also means the duration is not known up front, so the first
+ * seconds of a run show elapsed time rather than a percentage.
+ */
+function chooseLocal(file) {
+  chosen = file
+  selected = null
+  els.submit.disabled = false
+  setError(null)
+  viewing = null
+  rail?.setActive(null)
+
+  audioSeconds = 0
+  player?.destroy()
+  player = createPlayer(els.audio, `/v1/files/audio?path=${encodeURIComponent(file.path)}`)
+  els.audio.addEventListener('loadedmetadata', () => {
+    audioSeconds = Number.isFinite(els.audio.duration) ? els.audio.duration : 0
+  }, { once: true })
+
+  setState('armed')
 }
 
 // --- editing utterance boundaries --------------------------------------
@@ -391,6 +475,8 @@ function openRowMenu(position, event, textElement) {
 // selection. Everything below this line has already declined to handle it.
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return
+  // The dialog closes itself and tells `modal.js`, which is why there is no
+  // branch for it here: by the time this runs, it is already gone.
   if (isAsideOpen()) {
     closeAside()
     return
@@ -447,16 +533,18 @@ els.drop.addEventListener('blur', () => setInvited(false))
 
 els.form.addEventListener('submit', async (event) => {
   event.preventDefault()
-  if (!selected) return
+  if (!selected && !chosen) return
 
   setError(null)
   show(els.result, false)
   els.submit.disabled = true
   els.submit.textContent = 'Transcribing…'
+  viewing = null
+  rail?.setActive(null)
 
   const started = performance.now()
   const estimate = estimateSeconds(audioSeconds, { diarize: els.diarize.checked })
-  baseName = selected.name.replace(/\.[^.]+$/, '')
+  baseName = (selected?.name ?? chosen.name).replace(/\.[^.]+$/, '')
   seekable = true
 
   setState('busy', '0.0 s')
@@ -470,6 +558,7 @@ els.form.addEventListener('submit', async (event) => {
   try {
     const answer = await transcribe({
       file: selected,
+      path: chosen?.path,
       model: els.model.value,
       language: els.language.value.trim(),
       task: els.task.value,
@@ -488,12 +577,14 @@ els.form.addEventListener('submit', async (event) => {
     showTranscript(transcript, wall)
   } catch (error) {
     setError(error.message)
-    setState(selected ? 'armed' : 'waiting')
+    setState(selected || chosen ? 'armed' : 'waiting')
     setTitleProgress('')
   } finally {
     clearInterval(ticker)
-    els.submit.disabled = !selected
+    els.submit.disabled = !selected && !chosen
     els.submit.textContent = 'Transcribe'
+    // However it went, it is history now.
+    refreshRuns()
   }
 })
 
@@ -647,6 +738,143 @@ async function reattach() {
   if (transcript) showTranscript(transcript, (Date.now() - job.created) / 1000)
 }
 
+// --- history ------------------------------------------------------------
+
+async function refreshRuns() {
+  try {
+    rail?.setRuns(await getRuns())
+  } catch {
+    // A missing history is not worth an error banner over a working transcript.
+  }
+}
+
+/**
+ * Show a run that finished earlier.
+ *
+ * The same rendering as a fresh one — it is the same shape, deliberately, so
+ * there is one transcript view and not two. What differs is where the audio
+ * comes from: a stored Opus copy, the file on disk it was read from, or nowhere,
+ * in which case the timestamps go back to being text rather than pretending.
+ */
+async function openRun(id) {
+  try {
+    const run = await getRun(id)
+    if (!run) {
+      setError('That run is no longer in the database.')
+      await refreshRuns()
+      return
+    }
+    if (!run.transcript) {
+      // A failed run has no transcript to show, but every reason to be looked
+      // at — so the panel opens on its own with the error and the log.
+      viewing = run
+      rail?.setActive(id)
+      show(els.result, false)
+      openAside(runPanel(runPanelOptions(run)))
+      return
+    }
+
+    viewing = run
+    selected = null
+    chosen = null
+    els.submit.disabled = true
+    setError(null)
+    rail?.setActive(id)
+    closeMenu()
+
+    baseName = run.name.replace(/\.[^.]+$/, '')
+    player?.destroy()
+    player = null
+
+    const url = run.has_audio
+      ? `/v1/runs/audio?id=${encodeURIComponent(run.id)}`
+      : run.source === 'disk' && run.path
+        ? `/v1/files/audio?path=${encodeURIComponent(run.path)}`
+        : null
+    seekable = Boolean(url)
+    if (url) player = createPlayer(els.audio, url)
+    else els.audio.hidden = true
+
+    current = run.transcript
+    history.length = 0
+    editing = null
+    selectedRows.clear()
+    lastWall = run.wall_ms / 1000
+    render()
+    if (player) {
+      player.onTime((time) => markActive(els.segments, activeIndex(current.segments, time)))
+      player.onUnplayable(() => {
+        seekable = false
+        render()
+      })
+    }
+    show(els.result, true)
+
+    // The drop zone still says what it is showing, without claiming to be busy.
+    setState('done', describeRun(run))
+    setTitleProgress('')
+
+    openAside(runPanel(runPanelOptions(run)))
+  } catch (error) {
+    setError(error.message)
+  }
+}
+
+function runPanelOptions(run) {
+  return {
+    run,
+    onChanged: async () => {
+      await refreshRuns()
+      // Reopen against what is now true: dropping the audio changes what the
+      // panel can offer and whether the timestamps still play.
+      await openRun(run.id)
+    },
+    onDeleted: async () => {
+      closeAside()
+      viewing = null
+      show(els.result, false)
+      setState(selected || chosen ? 'armed' : 'waiting')
+      await refreshRuns()
+    },
+    onBrowse: canBrowse
+      ? (start) =>
+          openModal(
+            filePicker({
+              start,
+              onPick: async (file) => {
+                try {
+                  await detachAudio(run.id, file.path)
+                  await refreshRuns()
+                  await openRun(run.id)
+                } catch (error) {
+                  setError(error.message)
+                }
+              },
+            }),
+          )
+      : undefined,
+  }
+}
+
+/** Back to the drop zone, with nothing selected. */
+function newTranscript() {
+  closeAside()
+  closeModal()
+  viewing = null
+  selected = null
+  chosen = null
+  current = null
+  els.submit.disabled = true
+  setError(null)
+  show(els.result, false)
+  player?.destroy()
+  player = null
+  els.audio.hidden = true
+  rail?.setActive(null)
+  setState('waiting')
+  setTitleProgress('')
+}
+
 // --- startup -----------------------------------------------------------
 
 // Asked when the box is ticked, which is the user gesture the browser requires.
@@ -660,6 +888,25 @@ els.notify.addEventListener('change', async () => {
   }
 })
 
+let engines = []
+
+/** Put the saved defaults into the form. What "global settings" means here. */
+function applySettings(settings) {
+  if (!settings) return
+  els.language.value = settings.language ?? ''
+  els.task.value = settings.task ?? 'transcribe'
+  els.diarize.checked = Boolean(settings.diarize)
+  els.merge.checked = settings.merge !== false
+  els.notify.checked = Boolean(settings.notify)
+  if (settings.model && [...els.model.options].some((option) => option.value === settings.model)) {
+    els.model.value = settings.model
+  }
+}
+
+els.browse.addEventListener('click', () =>
+  openModal(filePicker({ onPick: chooseLocal, start: chosen?.path })),
+)
+
 async function init() {
   // Before anything else: the field starts at whatever the shader defaults to,
   // which is the top of its range. Left alone, an idle page drifts at working
@@ -667,12 +914,32 @@ async function init() {
   setState('waiting')
   show(els.notifyField, notificationsSupported())
 
+  rail = mountRail({
+    onNew: newTranscript,
+    onOpenRun: openRun,
+    onSettings: () =>
+      openModal(
+        settingsModal({
+          models: engines,
+          onSaved: async (settings) => {
+            applySettings(settings)
+            await refreshRuns()
+          },
+        }),
+      ),
+  })
+
   canBackground = await hasJobs()
+  canBrowse = await hasLocalFiles()
+  show(els.browseRow, canBrowse)
+  await refreshRuns()
+
   // A job may already be running from before this page was loaded.
   if (canBackground) await reattach().catch(() => {})
 
   try {
     const [health, models] = await Promise.all([getHealth(), getModels()])
+    engines = models
     els.model.replaceChildren(
       ...models.map((id) => Object.assign(document.createElement('option'), { value: id, textContent: id })),
     )
@@ -683,6 +950,13 @@ async function init() {
     els.status.textContent = 'server unreachable'
     els.status.className = 'badge badge--warn'
     setError(error.message)
+  }
+
+  // After the models are listed, so a saved model choice has something to match.
+  try {
+    applySettings((await getSettings()).settings)
+  } catch {
+    // No settings service: the form keeps the markup's defaults.
   }
 }
 

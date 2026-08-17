@@ -8,6 +8,18 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     jobs: JobService
   }
+
+  interface Events {
+    /**
+     * A job reached its end, however it ended.
+     *
+     * Emitted for failures as well as successes, because a run that failed is
+     * the one somebody comes back to look at. Observers only — the result has
+     * already been handed to whoever was waiting, and a listener that throws
+     * must not be able to unmake that. @mode emit
+     */
+    'job/settled'(job: Job): void
+  }
 }
 
 export type JobStatus = 'running' | 'done' | 'failed'
@@ -30,6 +42,21 @@ export interface Job {
   /** The name the file arrived under, so a notification can say which one. */
   name: string
   task: 'transcribe' | 'translate'
+  /** Whether the audio was uploaded, or read where it already lived. */
+  source: 'upload' | 'disk'
+  /** For a disk run, the file itself. Kept so playback can find it later. */
+  path?: string
+  /**
+   * The file the engine actually read, upload or not.
+   *
+   * Only valid until the job settles, because an upload's copy is deleted then
+   * — which is why `job/settled` is awaited before the cleanup runs. Not
+   * reported over HTTP: a temporary path is an implementation detail of the
+   * request that made it.
+   */
+  sourcePath: string
+  diarize: boolean
+  merge: boolean
   created: number
   finished?: number
   progress: JobProgress
@@ -39,6 +66,9 @@ export interface Job {
 
 export interface StartOptions {
   name: string
+  source?: 'upload' | 'disk'
+  /** Only for a disk run: an uploaded file's temporary path is nobody's business. */
+  path?: string
   /** Called once the job settles, however it settles — the upload is deleted here. */
   cleanup?: () => Promise<void> | void
 }
@@ -136,6 +166,11 @@ export class JobService extends Service {
       status: 'running',
       name: options.name,
       task: request.task,
+      source: options.source ?? 'upload',
+      ...(options.path ? { path: options.path } : {}),
+      sourcePath: request.path,
+      diarize: Boolean(request.diarize),
+      merge: request.merge !== false,
       created: Date.now(),
       progress: { seconds: 0, segments: 0 },
     }
@@ -165,6 +200,22 @@ export class JobService extends Service {
     } finally {
       job.finished = Date.now()
       this.watching.delete(request)
+
+      if (!this.disposed) {
+        // Before cleanup and awaited, in that order and for one reason: a
+        // listener that wants to keep a copy of the audio needs the file to
+        // still be there when it runs, and needs to be allowed to take its time
+        // over it. `parallel` is the awaiting emit; `emit` would delete the file
+        // out from under it.
+        try {
+          await this.ctx.parallel('job/settled', job)
+        } catch (error) {
+          // A listener's problem is not this job's problem: the transcript is
+          // finished and whoever asked for it is already holding it.
+          this.ctx.logger?.warn?.(`job/settled listener failed: ${error}`)
+        }
+      }
+
       await Promise.resolve(options.cleanup?.()).catch(() => {})
       this.sweep()
     }

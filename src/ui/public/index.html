@@ -11,11 +11,37 @@
     />
   </head>
   <body>
-    <header class="bar">
-      <h1>hexscribe</h1>
-      <p class="tagline">local speech to text on the Hexagon NPU</p>
-      <span id="status" class="badge badge--muted">checking…</span>
-    </header>
+    <!-- Collapsed to a column of icons; hovering or tabbing in slides out the
+         labels. It overlays rather than pushing the page, because a layout that
+         reflows whenever the pointer crosses it is a layout that fidgets. -->
+    <nav id="rail" class="rail" aria-label="hexscribe">
+      <div class="rail__brand">
+        <span class="rail__mark" aria-hidden="true">⬡</span>
+        <span class="rail__title">hexscribe</span>
+      </div>
+
+      <div class="rail__items">
+        <button id="rail-new" type="button" class="rail__item">
+          <span class="rail__icon" aria-hidden="true">✚</span>
+          <span class="rail__label">New transcript</span>
+        </button>
+
+        <button id="rail-jobs-toggle" type="button" class="rail__item" aria-expanded="true" aria-controls="rail-runs">
+          <span class="rail__icon" aria-hidden="true">☰</span>
+          <span class="rail__label">Jobs</span>
+          <span id="rail-jobs-count" class="rail__count"></span>
+        </button>
+        <ul id="rail-runs" class="rail__runs"></ul>
+      </div>
+
+      <div class="rail__foot">
+        <span id="status" class="badge badge--muted">checking…</span>
+        <button id="rail-settings" type="button" class="rail__item">
+          <span class="rail__icon" aria-hidden="true">⚙</span>
+          <span class="rail__label">Settings</span>
+        </button>
+      </div>
+    </nav>
 
     <main>
       <section class="panel">
@@ -25,6 +51,13 @@
             <strong id="drop-title">Drop audio here</strong>
             <span id="drop-hint" class="hint">or click to choose &middot; anything FFmpeg can open</span>
           </label>
+
+          <!-- The other way in: name a file instead of copying it. Hidden when
+               the server will not browse its own filesystem. -->
+          <p id="browse-row" class="browse" hidden>
+            <button id="browse" type="button" class="tool">Choose a file on this machine…</button>
+            <span id="browse-note" class="browse__note">transcribes it where it is, without uploading a copy</span>
+          </p>
 
           <div class="fields">
             <label>
@@ -97,6 +130,11 @@
     <!-- One panel, many contents: a speaker's identity, the download options,
          whatever comes next. Hidden until something asks for it. -->
     <aside id="aside" class="aside" aria-label="Details" hidden></aside>
+
+    <!-- A real <dialog>: the browser already traps focus, closes on Escape and
+         renders a backdrop, and reimplementing that is a lot of code to arrive
+         back where the platform started. -->
+    <dialog id="modal" class="modal"></dialog>
 
     <script type="module" src="/ui/js/main.js"></script>
   </body>

@@ -33,9 +33,12 @@ export async function getModels() {
  * segment times, and every other rendering is derived from it without asking
  * the NPU to do the work twice.
  */
-export async function transcribe({ file, model, language, task, diarize, merge, background, signal }) {
+export async function transcribe({ file, path, model, language, task, diarize, merge, background, signal }) {
   const form = new FormData()
-  form.append('file', file)
+  // A path instead of the bytes: the file never moves, which for an hour-long
+  // interview is the difference between 189 MB and 557 bytes on the wire.
+  if (path) form.append('path', path)
+  else form.append('file', file)
   form.append('model', model)
   form.append('response_format', 'verbose_json')
   if (language) form.append('language', language)
@@ -77,6 +80,65 @@ export async function getJob(id) {
 
 export async function forgetJob(id) {
   return postJson('/v1/jobs/forget', { id })
+}
+
+// --- history, settings, files ------------------------------------------
+
+export async function getRuns() {
+  return (await (await unwrap(await fetch('/v1/runs'))).json()).runs
+}
+
+export async function getRun(id) {
+  const response = await fetch(`/v1/runs?id=${encodeURIComponent(id)}`)
+  if (response.status === 404) return null
+  return (await unwrap(response)).json()
+}
+
+export async function deleteRun(id) {
+  return postJson('/v1/runs/delete', { id })
+}
+
+/** Drop a run's stored audio, optionally pointing it at a file on disk. */
+export async function detachAudio(id, path) {
+  return postJson('/v1/runs/audio/detach', { id, ...(path ? { path } : {}) })
+}
+
+export async function getSettings() {
+  return (await unwrap(await fetch('/v1/settings'))).json()
+}
+
+export async function saveSettings(patch) {
+  return postJson('/v1/settings', patch)
+}
+
+export async function clearStoredAudio() {
+  return postJson('/v1/store/clear-audio', {})
+}
+
+export async function resetStore() {
+  // The server insists on the words, so that a stray POST cannot do this.
+  return postJson('/v1/store/reset', { confirm: 'delete everything' })
+}
+
+/**
+ * Browse this machine for a recording.
+ *
+ * Returns null when the server will not do it — bound to a real interface with
+ * no api key, the plugin refuses to load, and offering a browse button that
+ * 404s would be worse than not offering one.
+ */
+export async function listFiles(path) {
+  const response = await fetch(`/v1/files${path ? `?path=${encodeURIComponent(path)}` : ''}`)
+  if (response.status === 404 && !path) return null
+  return (await unwrap(response)).json()
+}
+
+export async function hasLocalFiles() {
+  try {
+    return (await fetch('/v1/files')).ok
+  } catch {
+    return false
+  }
 }
 
 // --- the voice library -------------------------------------------------
