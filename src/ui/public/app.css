@@ -1229,3 +1229,8 @@ body {
 
 .aside__log--warn { color: var(--warn); }
 .aside__log--error { color: var(--err); }
+
+/* An interrupted run is not a failure -- it is a run with more to do. */
+.rail__run.is-unfinished .rail__run-meta {
+  color: var(--warn);
+}

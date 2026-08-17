@@ -24,6 +24,10 @@ out/
 # they are not expecting to be in. It stays on the machine that made it.
 voices.json
 
+# Screenshots dropped into the fixtures folder while working. The oracle
+# transcript beside the recordings is text and is committed; images are scratch.
+test/fixtures/*.png
+
 # Audio never belongs in this repo. Test recordings are private and live outside
 # it (see HEXSCRIBE_TEST_AUDIO in py/tests/local_audio.py); this is the backstop
 # in case one is ever copied in by accident.

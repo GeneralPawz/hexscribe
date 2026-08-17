@@ -88,6 +88,7 @@ await client.audio.transcriptions.create({
 | `GET /v1/runs` | recorded runs; `?id=` for one, with its transcript and log |
 | `GET /v1/runs/audio?id=` | the stored recording for a run |
 | `POST /v1/runs/{delete,audio/detach}` | forget a run, or its audio |
+| `POST /v1/runs/resume` | continue an interrupted run from its last utterance |
 | `GET /v1/files?path=` | browse this machine for a recording (loopback only) |
 | `GET /v1/files/audio?path=` | stream one, with range requests |
 | `GET,POST /v1/settings` | global defaults and database stats |
@@ -194,6 +195,7 @@ cordis.yml ── the application, as configuration
    ├── store-http.ts      history, settings, danger zone ──inject──> serve, store
    ├── history.ts         records finished runs ──inject──> jobs, store
    ├── audio-store.ts     keeps a small Opus copy ──inject──> jobs, store, worker
+   ├── toast-windows.ts   a Windows toast whose progress bar moves ──inject──> jobs
    ├── local-files.ts     service `localFiles`: reading audio where it lives
    ├── jobs.ts            service `jobs`: runs that outlive their request
    ├── jobs-http.ts       those over HTTP ──inject──> serve, jobs
@@ -425,6 +427,80 @@ that acceptable — the result is waiting either way.
 
 Jobs live in memory and are swept after an hour. Persisting them would mean
 persisting the audio too, and the uploads are deliberately temporary.
+
+### The transcript as it is written
+
+Utterances reach the page the moment the decoder produces them, rather than all
+at once at the end. On an hour-long interview that is the difference between four
+minutes of a percentage and four minutes of reading. The rows are not editable
+until the run finishes — the server is still appending, and an edit made now
+would be overwritten by the next poll.
+
+The poller asks for what it has not seen (`?from=`), so watching a long run does
+not re-send a growing transcript once a second.
+
+### Interruption is not loss
+
+Every utterance is written to the database as it is decoded. A run that stops —
+crash, restart, closed laptop — keeps everything up to its last utterance and is
+marked **interrupted** at the next start, because a row still saying `running`
+when nothing is running is the only evidence a crash leaves.
+
+Resuming starts the decoder at the last utterance boundary. The seek loop already
+works by "begin the next window where the last utterance ended", so this is the
+same move made once, at the beginning. Measured, by killing the server 16 minutes
+into the 1.31 h interview and resuming:
+
+| | |
+|---|---|
+| kept across the crash | 184 utterances, to 993 s |
+| resumed at | 993 s |
+| final transcript | **63,772 characters — identical to the uninterrupted run** |
+
+It needs the audio, and looks in three places: the file a disk run read, the
+upload's temporary copy (still there precisely *because* the run never settled
+and so never cleaned up), or the compressed copy in the database. None of those
+and it says so rather than starting from zero and calling that a resume.
+
+One honest seam: the merge pass runs over the resumed half only, so a sentence
+split exactly at the interruption stays split, and the run ends with slightly
+more utterances than an uninterrupted one (575 against 510). That is one join to
+fix by hand against an hour saved.
+
+**Three bugs this feature had, all found by running it rather than reading it:**
+
+- `INSERT OR REPLACE` is a delete followed by an insert, so re-opening a run's
+  row fired `ON DELETE CASCADE` and destroyed every stored utterance — at the
+  exact moment somebody asked to continue. It is an upsert now.
+- `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so a
+  database from the previous build kept the old shape and every insert failed.
+  Missing columns are now added on open.
+- And that failure was *silent*, because it was caught and logged to a logger
+  this composition attaches no exporter to. Failing to record a run now writes to
+  stderr, where the server already writes things that matter.
+
+### A Windows notification with a real progress bar
+
+The web Notifications API has no progress element, and no quiet way to update
+one: replacing a notification re-inserts it at the top of the Action Center, so
+rewriting it on every percent makes the panel churn. That was the flicker. The
+browser notification now rewrites itself at most every 20 seconds.
+
+Windows itself does have what was wanted — an **adaptive toast** carrying a
+`<progress>` bar whose bound values are rewritten in place by
+`ToastNotifier.Update()`: silently, no banner, no re-ordering. Only a native
+process can send one, which a web page is not. This server is a native process on
+the same machine, so it sends the toast on the page's behalf — which means it
+works **with no browser tab open at all**.
+
+`scripts/toast.ps1` is a long-lived PowerShell process reading JSON lines,
+because starting PowerShell costs a couple of hundred milliseconds and this moves
+a progress bar. Two things it gets wrong if you write it the obvious way:
+`NotificationData.Values` cannot be indexed from Windows PowerShell (the WinRT
+map projection is not there), so the data is built from a .NET dictionary through
+a constructor overload; and `[Console]::In` reads stdin in the console's
+codepage, which turned an ellipsis into `ÔÇª` and would have done the same to any
+umlaut in a filename.
 
 ### Naming a voice, once
 
@@ -871,6 +947,8 @@ src/ui/               browser front-end: plugin + public/ (html, css, js modules
 scripts/ui-check.mjs  end-to-end UI check over the DevTools Protocol
 scripts/reattach-check.mjs  proves a job survives the page that started it
 scripts/shell-check.mjs     rail, history, settings, and the file picker
+scripts/stream-check.mjs    the transcript appearing as it is decoded
+scripts/toast.ps1           the Windows progress toast, driven over stdin
 py/hexscribe_worker/  worker: audio.py, qnn.py, whisper_qnn.py, diarize.py,
                       diarize_utterances.py, worker.py
 py/pyproject.toml     ARM64 venv (uv), pinned for win_arm64 wheel reality
@@ -900,6 +978,9 @@ models/               downloaded assets (gitignored)
 - [x] A database of every run: transcripts, timings, logs and audio
 - [x] Left rail with run history, and a settings modal with a danger zone
 - [x] Transcribe files in place from disk, without uploading a copy
+- [x] Utterances streamed to the page and to the database as they are decoded
+- [x] Interrupted runs keep what they had and resume from it
+- [x] A Windows toast whose progress bar moves, with no tab open
 - [ ] Speaker *naming* — the labels are per-recording; recognising the same
       person across files needs an enrolled embedding per speaker, which the
       embedding model already produces

@@ -588,6 +588,24 @@ els.form.addEventListener('submit', async (event) => {
   }
 })
 
+/**
+ * The transcript so far, while it is still being written.
+ *
+ * Deliberately not the editable view: the server is still appending, and an
+ * edit made now would be overwritten by the next poll. So the rows render
+ * without the selection, menu and editing handlers — they are there to read,
+ * and they become editable the moment the run finishes.
+ */
+function showLive(live, wall) {
+  current = live
+  lastWall = wall
+  mountResult(live, wall, baseName, seekable ? (seconds) => player?.seek(seconds) : undefined, {})
+  els.undo.disabled = true
+  show(els.edited, false)
+  show(els.toolbar, false)
+  show(els.result, true)
+}
+
 /** Put a finished transcript on screen. Shared by the live path and a reattach. */
 function showTranscript(transcript, wall) {
   current = transcript
@@ -622,7 +640,7 @@ const POLL_MS = 1000
 // Permission is the browser's answer; the checkbox is the user's. Both have to
 // say yes, so unticking the box stops notifications without revoking anything.
 const wanted = () => els.notify.checked
-const tellProgress = (title, body) => wanted() && notifyProgress(title, body)
+const tellProgress = (title, body, options) => wanted() && notifyProgress(title, body, options)
 const tellDone = (title, body) => wanted() && notifyDone(title, body)
 
 /**
@@ -639,14 +657,28 @@ async function followJob(receipt, started) {
   localStorage.setItem(JOB_KEY, JSON.stringify({ id: receipt.id, name: receipt.name }))
   let announced = -1
 
+  // The transcript being built, shown as it is built. Held here rather than in
+  // `current` until the job finishes, because until then it is not editable —
+  // the server is still appending to it and an edit would be overwritten.
+  const live = { segments: [], text: '', duration: 0, language: null }
+
   for (;;) {
-    const job = await getJob(receipt.id)
+    const job = await getJob(receipt.id, live.segments.length)
     if (!job) {
       localStorage.removeItem(JOB_KEY)
       throw new Error('That job is no longer on the server. It may have finished long ago, or the server restarted.')
     }
 
     if (job.status === 'running') {
+      // The words, as they are decoded. Appended rather than re-rendered from
+      // scratch so the reader's scroll position survives each poll.
+      if (job.partial?.length) {
+        live.segments.push(...job.partial)
+        live.duration = job.progress.duration ?? 0
+        live.text = live.segments.map((segment) => segment.text).join(' ')
+        showLive(live, (performance.now() - started) / 1000)
+      }
+
       // Real progress supersedes the estimate; until the file has been decoded
       // there is no duration and nothing honest to report but the elapsed time.
       if (job.progress.fraction !== undefined) {
@@ -655,13 +687,16 @@ async function followJob(receipt, started) {
         els.dropHint.textContent =
           `${clock(job.progress.seconds)} of ${clock(job.progress.duration)} · ${percent}%`
         setTitleProgress(`${percent}%`)
-        // Only on each whole percent: a notification rewritten every second is
-        // a notification nobody keeps enabled.
+        // Offered on every whole percent; `notify.js` decides how often it is
+        // willing to actually rewrite the thing. Rewriting re-inserts it at the
+        // top of the Action Center, which at one percent a second is a panel
+        // that never sits still.
         if (percent !== announced) {
           announced = percent
           tellProgress(
             `Transcribing ${job.name}`,
             `${percent}% — ${clock(job.progress.seconds)} of ${clock(job.progress.duration)}`,
+            { force: percent === 1 },
           )
         }
       } else {
@@ -834,6 +869,20 @@ function runPanelOptions(run) {
       viewing = null
       show(els.result, false)
       setState(selected || chosen ? 'armed' : 'waiting')
+      await refreshRuns()
+    },
+    onResume: async (id) => {
+      closeAside()
+      await refreshRuns()
+      // Follow it as a live job again: it is running, and the words carry on
+      // appearing where they left off.
+      const receipt = { id, name: run.name }
+      setState('busy', 'resuming…')
+      const transcript = await followJob(receipt, performance.now()).catch((error) => {
+        setError(error.message)
+        return null
+      })
+      if (transcript) showTranscript(transcript, (Date.now() - run.created) / 1000)
       await refreshRuns()
     },
     onBrowse: canBrowse

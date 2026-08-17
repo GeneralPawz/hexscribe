@@ -64,6 +64,9 @@ export function mountRail({ onNew, onOpenRun, onSettings }) {
           button.dataset.id = run.id
           if (run.id === active) button.classList.add('is-active')
           if (run.status === 'failed') button.classList.add('is-failed')
+          if (run.status === 'interrupted' || run.status === 'running') {
+            button.classList.add('is-unfinished')
+          }
 
           const name = document.createElement('span')
           name.className = 'rail__run-name'
@@ -76,7 +79,11 @@ export function mountRail({ onNew, onOpenRun, onSettings }) {
           meta.textContent =
             run.status === 'failed'
               ? 'failed'
-              : `${clock(run.audio_seconds)} · ${run.segments} utt${run.has_audio ? ' · ♪' : ''}`
+              : run.status === 'interrupted'
+                ? 'interrupted · can resume'
+                : run.status === 'running'
+                  ? 'running…'
+                  : `${clock(run.audio_seconds)} · ${run.segments} utt${run.has_audio ? ' · ♪' : ''}`
 
           button.append(name, meta)
           button.addEventListener('click', () => onOpenRun(run.id))

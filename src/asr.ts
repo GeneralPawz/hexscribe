@@ -82,6 +82,17 @@ export interface TranscribeRequest {
    * whole-file segments; nothing here promises the engine obeys.
    */
   timestamps?: boolean
+  /**
+   * Seconds to start at, for a run being resumed rather than begun.
+   *
+   * The engine's seek loop already works by "start the next window where the
+   * last utterance ended"; this is the same move made once, at the beginning.
+   * Only an engine that decodes locally can honour it -- one that posts a file
+   * to somebody else's API cannot, which is why it is optional.
+   */
+  resumeFrom?: number
+  /** What to number the first utterance, so a resumed run continues the count. */
+  firstIndex?: number
   /** Attribute utterances to speakers. Opt-in: it costs several times the transcription. */
   diarize?: boolean
   /**

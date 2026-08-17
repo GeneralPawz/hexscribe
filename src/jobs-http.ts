@@ -50,9 +50,29 @@ export function apply(ctx: Context) {
     // Always the verbose form, never a rendered subtitle file. It is the only
     // shape carrying segment times, every other rendering is derived from it,
     // and `/ui/format` already exists to do that deriving without the NPU.
+    //
+    // A running job answers with what it has: the decoder produced those
+    // utterances minutes ago, and holding them back until the last one lands is
+    // a choice rather than a constraint. `from` lets a poller ask only for what
+    // it has not seen, so watching an hour-long run does not re-send the whole
+    // transcript once a second.
+    const from = Number(new URL(request.url).searchParams.get('from') ?? 0)
+    const since = Number.isFinite(from) && from > 0 ? from : 0
+
     return Response.json({
       ...summarise(job),
-      ...(job.transcript ? { transcript: verboseBody(job.transcript, job.task) } : {}),
+      ...(job.transcript
+        ? { transcript: verboseBody(job.transcript, job.task) }
+        : {
+            partial: job.segments.slice(since).map((segment) => ({
+              id: segment.index,
+              start: segment.start,
+              end: segment.end,
+              text: segment.text,
+              ...(segment.speaker ? { speaker: segment.speaker } : {}),
+            })),
+            partialFrom: since,
+          }),
     })
   })
 

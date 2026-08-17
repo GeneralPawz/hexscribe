@@ -550,6 +550,8 @@ class WhisperQnn:
         task: str = "transcribe",
         timestamps: bool = True,
         on_segment: "Callable[[Segment], None] | None" = None,
+        start_seconds: float = 0.0,
+        first_index: int = 0,
     ) -> tuple[list[Segment], Timing]:
         """Decode the whole recording, advancing by what each window finished.
 
@@ -564,7 +566,11 @@ class WhisperQnn:
         timing = Timing(audio_seconds=len(audio) / sample_rate)
         segments: list[Segment] = []
 
-        seek = 0
+        # Resuming: begin at the last utterance boundary that was recorded
+        # rather than at zero. The seek loop is already built around "start the
+        # next window where the last utterance ended", so this is the same move
+        # made once at the beginning.
+        seek = max(0, min(len(audio), int(start_seconds * sample_rate)))
         while seek < len(audio):
             chunk = audio[seek : seek + window]
             tokens = self.transcribe_chunk(
@@ -579,7 +585,7 @@ class WhisperQnn:
                 # whole window instead of seeking into the hallucination.
                 found, last_closed = [], None
             for segment in found:
-                segment.index = len(segments)
+                segment.index = first_index + len(segments)
                 segments.append(segment)
                 if on_segment is not None:
                     on_segment(segment)

@@ -50,11 +50,32 @@ export async function requestNotifications() {
 }
 
 let live = null
+let lastShown = 0
 
-/** Replace the progress notification, silently. */
-export function notifyProgress(title, body) {
+/**
+ * How rarely the progress line may be rewritten.
+ *
+ * A replacement re-inserts the notification at the top of the Action Center, so
+ * rewriting it on every percent makes the panel visibly churn — which is what it
+ * did, once a second, for four minutes. Windows has a notification type that
+ * updates in place without any of that (`toast-windows.ts` sends it, from the
+ * server); this is the web API, which has no such thing, so the only remedy is
+ * to do it seldom.
+ */
+const PROGRESS_EVERY_MS = 20_000
+
+/**
+ * Move the progress notification along, if it is time.
+ *
+ * Deliberately *not* closing the old one first. Closing and constructing is
+ * what makes it disappear and reappear; constructing with the same tag replaces
+ * it in place, which is as close to a quiet update as this API offers.
+ */
+export function notifyProgress(title, body, { force = false } = {}) {
   if (!notificationsAllowed()) return
-  close()
+  const now = Date.now()
+  if (!force && now - lastShown < PROGRESS_EVERY_MS) return
+  lastShown = now
   try {
     live = new Notification(title, { body, tag: TAG, silent: true, renotify: false })
     live.onclick = focusHere
@@ -67,6 +88,7 @@ export function notifyProgress(title, body) {
 /** The one that is allowed to make a sound, because it is the one worth hearing. */
 export function notifyDone(title, body) {
   if (!notificationsAllowed()) return
+  lastShown = 0
   close()
   try {
     live = new Notification(title, { body, tag: TAG, renotify: true })

@@ -11,7 +11,7 @@
  * anyway" is a judgement about *this* run, not a global setting.
  */
 
-import { deleteRun, detachAudio } from './api.js'
+import { deleteRun, detachAudio, resumeRun } from './api.js'
 import { button, field, note, row, stat } from './aside.js'
 import { clock, humanSize } from './dom.js'
 
@@ -21,8 +21,9 @@ import { clock, humanSize } from './dom.js'
  * @param {() => void} options.onChanged the history list needs redrawing
  * @param {() => void} options.onDeleted this run is gone; leave it
  * @param {(start: string) => void} [options.onBrowse] open the file picker
+ * @param {(id: string) => void} [options.onResume] an interrupted run was restarted
  */
-export function runPanel({ run, onChanged, onDeleted, onBrowse }) {
+export function runPanel({ run, onChanged, onDeleted, onBrowse, onResume }) {
   return {
     title: 'Run',
     mount(body) {
@@ -37,6 +38,15 @@ export function runPanel({ run, onChanged, onDeleted, onBrowse }) {
 
       if (run.status === 'failed') {
         body.append(note(run.error ?? 'This run failed.', 'warn'))
+      }
+      if (run.status === 'interrupted') {
+        body.append(
+          note(
+            `Interrupted after ${run.segments || (run.transcript?.segments.length ?? 0)} utterances. ` +
+              'Everything decoded before that was kept, so it can carry on from there.',
+            'warn',
+          ),
+        )
       }
 
       const facts = document.createElement('div')
@@ -88,6 +98,23 @@ export function runPanel({ run, onChanged, onDeleted, onBrowse }) {
       }
 
       const actions = []
+      if (run.status === 'interrupted' && onResume) {
+        const carryOn = button('Resume', {
+          primary: true,
+          onClick: async () => {
+            carryOn.disabled = true
+            try {
+              const result = await resumeRun(run.id)
+              say(`Carrying on from ${Math.round(result.resumeFrom)}s, keeping ${result.kept} utterances.`, 'ok')
+              onResume(run.id)
+            } catch (error) {
+              say(error.message, 'warn')
+              carryOn.disabled = false
+            }
+          },
+        })
+        actions.push(carryOn)
+      }
       if (run.has_audio) {
         const drop = button('Delete stored audio', {
           onClick: async () => {

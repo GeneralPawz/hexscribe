@@ -133,6 +133,9 @@ class Worker:
         language = params.get("language") or None
         task = params.get("task", "transcribe")
         timestamps = params.get("timestamps", True)
+        # Where a resumed run picks up, and what to number its first utterance.
+        resume_from = float(params.get("resume_from") or 0.0)
+        first_index = int(params.get("first_index") or 0)
 
         engine = self.engine()
 
@@ -171,8 +174,16 @@ class Worker:
             )
 
         segments, timing = engine.transcribe(
-            pcm, language=language, task=task, timestamps=timestamps, on_segment=stream
+            pcm,
+            language=language,
+            task=task,
+            timestamps=timestamps,
+            on_segment=stream,
+            start_seconds=resume_from,
+            first_index=first_index,
         )
+        if resume_from:
+            _log(f"resumed at {resume_from:.1f}s, decoded {len(segments)} more utterances")
 
         return {
             "segments": [

@@ -10,13 +10,25 @@ declare module '@deepseek-ai/cordis' {
   }
 
   interface Events {
+    /** A job began. The run exists from here, not from when it finishes. @mode emit */
+    'job/started'(job: Job): void
+    /**
+     * An utterance landed, or the duration became known.
+     *
+     * Every observer that wants to show progress needs the same two things —
+     * how far along, and which file — and only the job has both. Emitted per
+     * utterance; anything that cannot keep up at that rate throttles itself,
+     * because how often to redraw is the observer's business and not this
+     * service's. @mode emit
+     */
+    'job/progress'(job: Job, segment?: Segment): void
     /**
      * A job reached its end, however it ended.
      *
      * Emitted for failures as well as successes, because a run that failed is
-     * the one somebody comes back to look at. Observers only — the result has
-     * already been handed to whoever was waiting, and a listener that throws
-     * must not be able to unmake that. @mode emit
+     * the one somebody comes back to look at. Awaited via `ctx.parallel` before
+     * the upload is cleaned up, so a listener that wants the audio still has it.
+     * @mode parallel
      */
     'job/settled'(job: Job): void
   }
@@ -57,15 +69,39 @@ export interface Job {
   sourcePath: string
   diarize: boolean
   merge: boolean
+  /**
+   * What the request asked for, kept because a resumed run has to ask for the
+   * same thing. Recorded at the start rather than taken from the finished
+   * transcript: an interrupted run has no finished transcript, and resuming
+   * without a language means auto-detection — which on a German interview
+   * starting forty minutes in produced almost no text at all.
+   */
+  language?: string
   created: number
   finished?: number
   progress: JobProgress
+  /**
+   * Utterances so far, in the order the decoder produced them.
+   *
+   * A running job has a partial transcript, not no transcript. Keeping them
+   * here is what lets a reader watch it appear and what lets an interrupted run
+   * be resumed from where it stopped rather than from the beginning.
+   */
+  segments: Segment[]
   transcript?: Transcript
   error?: string
 }
 
 export interface StartOptions {
   name: string
+  /**
+   * Continue an existing run rather than opening a new one.
+   *
+   * A resumed transcription is the same run: the same file, the same history
+   * row, the same utterance numbering. Giving it a new id would leave the
+   * interrupted half orphaned and the finished half looking like a duplicate.
+   */
+  id?: string
   source?: 'upload' | 'disk'
   /** Only for a disk run: an uploaded file's temporary path is nobody's business. */
   path?: string
@@ -125,7 +161,12 @@ export class JobService extends Service {
       if (!job || job.status !== 'running') return
       job.progress.segments += 1
       job.progress.seconds = Math.max(job.progress.seconds, segment.end)
+      // Kept, not just counted. The decoder has already produced these words and
+      // making the reader wait for the last one before seeing the first is a
+      // choice, not a constraint.
+      job.segments.push(segment)
       this.recompute(job)
+      ctx.emit('job/progress', job, segment)
     })
 
     ctx.on('asr/audio', (seconds: number, request: TranscribeRequest) => {
@@ -133,6 +174,7 @@ export class JobService extends Service {
       if (!job) return
       job.progress.duration = seconds
       this.recompute(job)
+      ctx.emit('job/progress', job)
     })
 
     ctx.effect(() => () => {
@@ -162,7 +204,7 @@ export class JobService extends Service {
     this.sweep()
 
     const job: Job = {
-      id: randomUUID(),
+      id: options.id ?? randomUUID(),
       status: 'running',
       name: options.name,
       task: request.task,
@@ -171,12 +213,15 @@ export class JobService extends Service {
       sourcePath: request.path,
       diarize: Boolean(request.diarize),
       merge: request.merge !== false,
+      ...(request.language ? { language: request.language } : {}),
       created: Date.now(),
       progress: { seconds: 0, segments: 0 },
+      segments: [],
     }
     this.jobs.set(job.id, job)
     this.watching.set(request, job.id)
 
+    this.ctx.emit('job/started', job)
     void this.run(job, request, options)
     return job
   }

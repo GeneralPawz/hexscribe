@@ -88,9 +88,14 @@ def test_a_thoroughly_broken_file_is_refused_rather_than_half_transcribed(tmp_pa
         pass
 
 
-def test_the_local_recordings_still_decode_cleanly():
+def test_a_real_recording_decodes_whole():
     # A guard on the skip path itself: it must not start quietly dropping
-    # packets from files that were fine before it existed.
+    # packets it could have read.
+    #
+    # Not "reports no damage": one of this machine's own recordings is a 1.31 h
+    # MP3 with exactly one bad packet in 196,800, which is the case this whole
+    # module exists for. What has to hold is that whatever it skips is
+    # negligible -- far under the ratio at which the file would be refused.
     path = find_test_audio()
     if path is None:
         pytest.skip("no local test recording")
@@ -99,4 +104,7 @@ def test_the_local_recordings_still_decode_cleanly():
     audio = audio_mod.load_audio(path, on_damage=lambda *args: reports.append(args))
 
     assert len(audio) > 0
-    assert reports == [], f"a known-good recording reported damage: {reports}"
+    for skipped, packets in reports:
+        assert skipped / packets < audio_mod.MAX_BAD_PACKET_RATIO / 10, (
+            f"skipped {skipped} of {packets} packets, which is too much to call a blemish"
+        )

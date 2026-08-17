@@ -2,8 +2,48 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from './serve/index.ts'
 import type {} from './store.ts'
 import type {} from './local-files.ts'
+import { writeFile, rm, access } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import type {} from './jobs.ts'
+import type { Run } from './store.ts'
 import { badRequest, notFound } from './serve/errors.ts'
 import { verboseBody } from './serve/openai.ts'
+
+/**
+ * Where the audio for an interrupted run still is, if anywhere.
+ *
+ * Three places, in order of preference: the file a disk run read, the upload's
+ * temporary copy (still present exactly because the run never settled and so
+ * never cleaned up after itself), or the compressed copy in the database, which
+ * has to be written back out for the worker to open.
+ */
+async function findAudio(
+  ctx: Context,
+  run: Run,
+): Promise<{ path: string; cleanup?: () => Promise<void> } | undefined> {
+  const readable = async (path: string | null) => {
+    if (!path) return false
+    try {
+      await access(path)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  if (await readable(run.path)) return { path: run.path as string }
+  if (await readable(run.source_path)) return { path: run.source_path as string }
+
+  const stored = ctx.store.getAudio(run.id)
+  if (!stored) return undefined
+  // Opus at 16 kHz is exactly what the model hears anyway, so resuming from the
+  // compressed copy costs nothing in accuracy.
+  const path = join(tmpdir(), `hexscribe-resume-${randomUUID()}.ogg`)
+  await writeFile(path, stored.bytes)
+  return { path, cleanup: () => rm(path, { force: true }).then(() => {}) }
+}
 
 /**
  * The database over HTTP: history, settings, and the danger zone.
@@ -85,6 +125,69 @@ export function apply(ctx: Context) {
     }
     ctx.store.vacuum()
     return Response.json({ dropped, run: ctx.store.getRun(id), stats: ctx.store.stats() })
+  })
+
+  /**
+   * Pick an interrupted run back up.
+   *
+   * Every utterance was written down as it was decoded, so what is missing is
+   * the part after the last one — and the engine's seek loop already starts
+   * windows at utterance boundaries, so continuing from there is the same move
+   * it makes all the way through.
+   *
+   * What it needs is the audio, and there are three places it might be: the
+   * file on disk a disk run read, the upload's temporary copy (still there,
+   * precisely because the run never settled and so never cleaned up), or the
+   * compressed copy in the database. Anything else and this says so rather than
+   * starting from zero and pretending that was a resume.
+   */
+  ctx.serve.route('POST', '/v1/runs/resume', async (request) => {
+    const { id } = await body(request)
+    if (typeof id !== 'string') throw badRequest('Resume needs an `id`.')
+
+    const jobs: Context['jobs'] | undefined = ctx.reflect.get('jobs')
+    if (!jobs) throw badRequest('Background transcription is not enabled on this server.')
+
+    const run = ctx.store.getRun(id)
+    if (!run) throw notFound(`No run ${id}.`)
+    if (run.status !== 'interrupted') {
+      throw badRequest(`Run ${id} is ${run.status}, not interrupted.`)
+    }
+
+    const audio = await findAudio(ctx, run)
+    if (!audio) {
+      throw badRequest(
+        'The audio for this run is gone, so it cannot be continued. ' +
+          'Transcribe the file again, or point the run at a copy on disk first.',
+      )
+    }
+
+    const decoded = ctx.store.runSegments(id)
+    const resumeFrom = decoded.length ? decoded[decoded.length - 1].end : 0
+
+    const job = jobs.start(
+      {
+        path: audio.path,
+        language: run.language ?? undefined,
+        task: (run.task as 'transcribe' | 'translate') ?? 'transcribe',
+        timestamps: true,
+        diarize: run.diarize === 1,
+        merge: run.merge === 1,
+        resumeFrom,
+        firstIndex: decoded.length,
+      },
+      {
+        // The same run, continued: a new id would orphan the half already
+        // decoded and make the finished half look like a duplicate.
+        id: run.id,
+        name: run.name,
+        source: run.source,
+        ...(run.source === 'disk' && run.path ? { path: run.path } : {}),
+        ...(audio.cleanup ? { cleanup: audio.cleanup } : {}),
+      },
+    )
+    ctx.store.log('info', `resuming at ${resumeFrom.toFixed(1)}s with ${decoded.length} utterances kept`, run.id)
+    return Response.json({ id: job.id, status: job.status, resumeFrom, kept: decoded.length })
   })
 
   ctx.serve.route('POST', '/v1/runs/delete', async (request) => {

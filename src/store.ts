@@ -38,7 +38,19 @@ export interface Run {
   source: 'upload' | 'disk'
   /** For a disk run, the file itself — which is also how playback finds it. */
   path: string | null
-  status: 'done' | 'failed'
+  /**
+   * The file the engine read, upload included.
+   *
+   * Kept so an interrupted run can be resumed: an upload's temporary copy is
+   * deleted when a job *settles*, and a run that was interrupted never did, so
+   * the file is usually still there.
+   */
+  source_path: string | null
+  /**
+   * `running` while it is happening, and left that way by a crash — which is
+   * how an interrupted run is recognised at the next start.
+   */
+  status: 'running' | 'done' | 'failed' | 'interrupted'
   created: number
   finished: number
   wall_ms: number
@@ -117,6 +129,7 @@ const SCHEMA = `
     name          TEXT NOT NULL,
     source        TEXT NOT NULL DEFAULT 'upload',
     path          TEXT,
+    source_path   TEXT,
     status        TEXT NOT NULL,
     created       INTEGER NOT NULL,
     finished      INTEGER NOT NULL,
@@ -140,6 +153,19 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS transcripts (
     run_id TEXT PRIMARY KEY REFERENCES runs (id) ON DELETE CASCADE,
     json   TEXT NOT NULL
+  );
+
+  -- Utterances as they are decoded, before there is a transcript to speak of.
+  -- A run interrupted at forty minutes has forty minutes of these, which is the
+  -- difference between resuming and starting again.
+  CREATE TABLE IF NOT EXISTS run_segments (
+    run_id  TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+    idx     INTEGER NOT NULL,
+    start   REAL NOT NULL,
+    end     REAL NOT NULL,
+    text    TEXT NOT NULL,
+    speaker TEXT,
+    PRIMARY KEY (run_id, idx)
   );
 
   CREATE TABLE IF NOT EXISTS audio (
@@ -198,8 +224,50 @@ export class StoreService extends Service {
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA foreign_keys = ON')
     this.db.exec(SCHEMA)
+    this.migrate()
+
+    // A run still marked `running` at startup is one the last process did not
+    // live to finish. Nothing else can tell the difference, because a crash
+    // leaves no record of itself -- only this gap between what the row says and
+    // the fact that nothing is running.
+    const orphaned = this.db.prepare("UPDATE runs SET status = 'interrupted' WHERE status = 'running'").run()
+    if (orphaned.changes) {
+      this.log('warn', `${orphaned.changes} run(s) were interrupted by a restart and can be resumed`)
+    }
 
     ctx.effect(() => () => this.db.close(), 'store-handle')
+  }
+
+  /**
+   * Add columns a newer version expects to a table an older one created.
+   *
+   * `CREATE TABLE IF NOT EXISTS` does exactly nothing to a table that already
+   * exists, including one missing half the columns — so a database written by
+   * yesterday's build keeps yesterday's shape and every insert against it fails.
+   * That failure is quiet in the worst way: the writes were wrapped in a
+   * try/catch that logged somewhere nobody was reading, so runs simply stopped
+   * being recorded and nothing said so.
+   *
+   * Additive only, and that is the whole policy: SQLite can add a nullable
+   * column to a populated table instantly, and anything more than that is a
+   * migration that deserves to be written down rather than inferred here.
+   */
+  private migrate() {
+    const wanted: Record<string, Record<string, string>> = {
+      runs: { source_path: 'TEXT' },
+    }
+    for (const [table, columns] of Object.entries(wanted)) {
+      const present = new Set(
+        (this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>).map(
+          (column) => column.name,
+        ),
+      )
+      for (const [column, type] of Object.entries(columns)) {
+        if (present.has(column)) continue
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+        this.log('info', `added column ${table}.${column}`)
+      }
+    }
   }
 
   // --- runs ------------------------------------------------------------
@@ -207,16 +275,30 @@ export class StoreService extends Service {
   saveRun(run: Omit<Run, 'has_audio' | 'audio_bytes'>, transcript?: Transcript) {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO runs
-         (id, name, source, path, status, created, finished, wall_ms, engine, model, language,
-          task, diarize, merge, audio_seconds, segments, speakers, rtf, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        // An upsert, emphatically not `INSERT OR REPLACE`. That is a delete
+        // followed by an insert, so re-opening an existing run fired the
+        // `ON DELETE CASCADE` on run_segments and destroyed everything decoded
+        // before the interruption -- at the exact moment somebody asked to
+        // continue it. `ON CONFLICT DO UPDATE` leaves the row in place.
+        `INSERT INTO runs
+         (id, name, source, path, source_path, status, created, finished, wall_ms, engine, model,
+          language, task, diarize, merge, audio_seconds, segments, speakers, rtf, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, source = excluded.source, path = excluded.path,
+           source_path = excluded.source_path, status = excluded.status,
+           finished = excluded.finished, wall_ms = excluded.wall_ms, engine = excluded.engine,
+           model = excluded.model, language = excluded.language, task = excluded.task,
+           diarize = excluded.diarize, merge = excluded.merge,
+           audio_seconds = excluded.audio_seconds, segments = excluded.segments,
+           speakers = excluded.speakers, rtf = excluded.rtf, error = excluded.error`,
       )
       .run(
         run.id,
         run.name,
         run.source,
         run.path,
+        run.source_path,
         run.status,
         run.created,
         run.finished,
@@ -268,7 +350,24 @@ export class StoreService extends Service {
     const stored = this.db.prepare('SELECT json FROM transcripts WHERE run_id = ?').get(id) as
       | { json: string }
       | undefined
-    return { ...row, transcript: stored ? (JSON.parse(stored.json) as Transcript) : undefined }
+    if (stored) return { ...row, transcript: JSON.parse(stored.json) as Transcript }
+
+    // No finished transcript: a run that is still going, or one that was
+    // interrupted. Either way the utterances decoded so far are worth handing
+    // over -- that is the whole reason they were written down one at a time.
+    const partial = this.runSegments(id)
+    if (!partial.length) return { ...row, transcript: undefined }
+    return {
+      ...row,
+      transcript: {
+        engine: row.engine ?? 'unknown',
+        model: row.model ?? 'unknown',
+        ...(row.language ? { language: row.language } : {}),
+        segments: partial,
+        text: partial.map((segment) => segment.text).join(' '),
+        timing: { audio_seconds: row.audio_seconds, total_ms: row.wall_ms, rtf: row.rtf },
+      },
+    }
   }
 
   deleteRun(id: string): boolean {
@@ -276,6 +375,7 @@ export class StoreService extends Service {
     // and leaving them would make "delete this run" a lie.
     const result = this.db.prepare('DELETE FROM runs WHERE id = ?').run(id)
     this.db.prepare('DELETE FROM transcripts WHERE run_id = ?').run(id)
+    this.db.prepare('DELETE FROM run_segments WHERE run_id = ?').run(id)
     this.db.prepare('DELETE FROM audio WHERE run_id = ?').run(id)
     return result.changes > 0
   }
@@ -284,6 +384,41 @@ export class StoreService extends Service {
   setRunSource(id: string, source: 'upload' | 'disk', path: string | null): boolean {
     const result = this.db.prepare('UPDATE runs SET source = ?, path = ? WHERE id = ?').run(source, path, id)
     return result.changes > 0
+  }
+
+  // --- utterances, as they arrive ---------------------------------------
+
+  /**
+   * Record one utterance the moment it is decoded.
+   *
+   * `INSERT OR REPLACE` rather than plain insert: resuming re-decodes from the
+   * last utterance boundary, so the first one or two of a resumed run can
+   * overlap what is already stored. Replacing keeps the newer reading rather
+   * than failing on the key.
+   */
+  appendSegment(runId: string, segment: { index: number; start: number; end: number; text: string; speaker?: string }) {
+    this.db
+      .prepare('INSERT OR REPLACE INTO run_segments (run_id, idx, start, end, text, speaker) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(runId, segment.index, segment.start, segment.end, segment.text, segment.speaker ?? null)
+  }
+
+  /** What has been decoded so far, in order. */
+  runSegments(runId: string): Array<{ index: number; start: number; end: number; text: string; speaker?: string }> {
+    const rows = this.db
+      .prepare('SELECT idx, start, end, text, speaker FROM run_segments WHERE run_id = ? ORDER BY idx')
+      .all(runId) as unknown as Array<{ idx: number; start: number; end: number; text: string; speaker: string | null }>
+    return rows.map((row) => ({
+      index: row.idx,
+      start: row.start,
+      end: row.end,
+      text: row.text,
+      ...(row.speaker ? { speaker: row.speaker } : {}),
+    }))
+  }
+
+  /** Dropped once a finished transcript supersedes them. */
+  clearRunSegments(runId: string) {
+    this.db.prepare('DELETE FROM run_segments WHERE run_id = ?').run(runId)
   }
 
   // --- audio -----------------------------------------------------------
@@ -395,7 +530,10 @@ export class StoreService extends Service {
 
   /** The danger zone's larger button. Everything, including the settings. */
   reset() {
-    this.db.exec('DELETE FROM audio; DELETE FROM transcripts; DELETE FROM runs; DELETE FROM logs; DELETE FROM settings;')
+    this.db.exec(
+      'DELETE FROM audio; DELETE FROM run_segments; DELETE FROM transcripts; ' +
+        'DELETE FROM runs; DELETE FROM logs; DELETE FROM settings;',
+    )
     this.vacuum()
   }
 }

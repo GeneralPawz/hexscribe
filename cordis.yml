@@ -120,6 +120,12 @@
 # run, they are just forgotten when they finish.
 - name: './src/history.ts'
 
+# A Windows toast whose progress bar actually moves, sent by the server -- so it
+# works with no browser tab open at all. The web Notifications API has no
+# progress element and no quiet update; Windows does, but only a native process
+# can send one. Loads only on Windows.
+- name: './src/toast-windows.ts'
+
 # History, settings and the danger zone over HTTP.
 - name: './src/store-http.ts'
 

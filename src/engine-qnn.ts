@@ -31,6 +31,8 @@ export function apply(ctx: Context) {
           language: request.language ?? null,
           task: request.task,
           timestamps: request.timestamps ?? true,
+          resume_from: request.resumeFrom ?? 0,
+          first_index: request.firstIndex ?? 0,
         },
         (event, data) => {
           if (event === 'segment') onSegment(data as Segment)

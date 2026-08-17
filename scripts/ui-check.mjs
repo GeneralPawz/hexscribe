@@ -208,7 +208,11 @@ check('and the page remembers it, so a reload can find it again',
 const midFlight = await evaluate(`document.querySelector('#drop-hint').textContent`)
 check('progress is reported while it runs', /reading the file|\d+%/.test(midFlight), midFlight)
 
-await until('!document.querySelector("#result").hidden', 'transcription', 600_000)
+
+// Not "the result is visible": utterances now render as they are decoded, so
+// the panel appears long before the run is over. The drop zone's own state is
+// the thing that only becomes `done` at the end.
+await until('document.querySelector("#drop").dataset.state === "done"', 'transcription', 600_000)
 await shoot(shotPath.replace(/\.png$/, '-done.png'))
 
 const segments = await evaluate(`document.querySelectorAll('#segments li').length`)

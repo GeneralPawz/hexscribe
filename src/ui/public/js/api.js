@@ -70,8 +70,13 @@ export async function hasJobs() {
   }
 }
 
-export async function getJob(id) {
-  const response = await fetch(`/v1/jobs?id=${encodeURIComponent(id)}`)
+/**
+ * @param from how many utterances the caller already has, so a running job
+ *   sends only what is new. Watching an hour-long run otherwise re-sends the
+ *   whole growing transcript once a second.
+ */
+export async function getJob(id, from = 0) {
+  const response = await fetch(`/v1/jobs?id=${encodeURIComponent(id)}&from=${from}`)
   // Gone is a real answer, not an error: a finished job is dropped eventually,
   // and a page reattaching to one from yesterday needs to hear that plainly.
   if (response.status === 404) return null
@@ -92,6 +97,11 @@ export async function getRun(id) {
   const response = await fetch(`/v1/runs?id=${encodeURIComponent(id)}`)
   if (response.status === 404) return null
   return (await unwrap(response)).json()
+}
+
+/** Continue an interrupted run from the last utterance it managed. */
+export async function resumeRun(id) {
+  return postJson('/v1/runs/resume', { id })
 }
 
 export async function deleteRun(id) {

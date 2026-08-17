@@ -55,6 +55,7 @@ const run = (id: string, overrides: Partial<Run> = {}): Omit<Run, 'has_audio' | 
   name: `${id}.wav`,
   source: 'upload',
   path: null,
+  source_path: null,
   status: 'done',
   created: Date.now(),
   finished: Date.now() + 1000,
@@ -261,4 +262,133 @@ test('a run can be repointed from stored audio to a file on disk', async (t) => 
   assert.equal(found?.source, 'disk')
   assert.equal(found?.path, 'D:\\audio\\interview.mp3')
   assert.equal(found?.has_audio, 0)
+})
+
+// --- streaming, and picking up where a crash left off ------------------
+
+test('utterances are stored as they are decoded, before there is a transcript', async (t) => {
+  // The whole point: four minutes into an hour-long run there used to be
+  // nothing on disk at all, so a crash cost everything rather than the last
+  // utterance.
+  const app = await store()
+  t.after(app.dispose)
+
+  app.ctx.store.saveRun(run('live', { status: 'running', segments: 0 }))
+  app.ctx.store.appendSegment('live', { index: 0, start: 0, end: 5, text: 'first' })
+  app.ctx.store.appendSegment('live', { index: 1, start: 5, end: 11, text: 'second', speaker: 'SPEAKER_00' })
+
+  const decoded = app.ctx.store.runSegments('live')
+  assert.equal(decoded.length, 2)
+  assert.equal(decoded[1].text, 'second')
+  assert.equal(decoded[1].speaker, 'SPEAKER_00')
+  assert.equal(decoded[0].speaker, undefined, 'absent rather than null')
+
+  // And they are readable as a transcript, so a half-finished run still shows.
+  const partial = app.ctx.store.getRun('live')
+  assert.equal(partial?.transcript?.segments.length, 2)
+  assert.match(partial?.transcript?.text ?? '', /first second/)
+})
+
+test('a resumed utterance replaces the one it overlaps rather than colliding', () => {
+  // Resuming re-decodes from the last boundary, so the first utterance of the
+  // continuation can be one already stored. A primary-key collision there would
+  // end the run.
+  return (async () => {
+    const app = await store()
+    try {
+      app.ctx.store.saveRun(run('r', { status: 'running' }))
+      app.ctx.store.appendSegment('r', { index: 0, start: 0, end: 5, text: 'original' })
+      app.ctx.store.appendSegment('r', { index: 0, start: 0, end: 5, text: 'redecoded' })
+
+      const decoded = app.ctx.store.runSegments('r')
+      assert.equal(decoded.length, 1)
+      assert.equal(decoded[0].text, 'redecoded', 'the newer reading wins')
+    } finally {
+      await app.dispose()
+    }
+  })()
+})
+
+test('a run left running by a crash is found and marked interrupted', async (t) => {
+  const app = await store()
+  t.after(app.dispose)
+
+  app.ctx.store.saveRun(run('crashed', { status: 'running' }))
+  app.ctx.store.appendSegment('crashed', { index: 0, start: 0, end: 30, text: 'got this far' })
+  await app.ctx.root.fiber.dispose()
+
+  // Reopening is the next start of the app. Nothing else can tell the
+  // difference between "running" and "was running when the power went out".
+  const reopened = new Context()
+  await reopened.plugin(storePlugin, { path: app.path })
+
+  const found = reopened.store.getRun('crashed')
+  assert.equal(found?.status, 'interrupted')
+  assert.equal(reopened.store.runSegments('crashed').length, 1, 'and what it had is still there')
+  assert.equal(found?.transcript?.segments[0].text, 'got this far')
+
+  await reopened.root.fiber.dispose()
+})
+
+test('a finished transcript supersedes the streamed utterances', async (t) => {
+  const app = await store()
+  t.after(app.dispose)
+
+  app.ctx.store.saveRun(run('done-run', { status: 'running' }))
+  app.ctx.store.appendSegment('done-run', { index: 0, start: 0, end: 5, text: 'raw' })
+  app.ctx.store.saveRun(run('done-run'), transcript())
+  app.ctx.store.clearRunSegments('done-run')
+
+  assert.equal(app.ctx.store.runSegments('done-run').length, 0)
+  const found = app.ctx.store.getRun('done-run')
+  assert.equal(found?.transcript?.segments[0].text, 'utterance 0', 'the post-processed one, not the raw one')
+})
+
+test('deleting a run takes its streamed utterances too', async (t) => {
+  const app = await store()
+  t.after(app.dispose)
+
+  app.ctx.store.saveRun(run('gone', { status: 'running' }))
+  app.ctx.store.appendSegment('gone', { index: 0, start: 0, end: 5, text: 'x' })
+
+  app.ctx.store.deleteRun('gone')
+
+  assert.equal(app.ctx.store.runSegments('gone').length, 0)
+})
+
+test('a database written by an older build gains the columns it is missing', async (t) => {
+  // `CREATE TABLE IF NOT EXISTS` does nothing to a table that already exists, so
+  // a file from yesterday keeps yesterday's shape and every insert against it
+  // fails. That is exactly what happened, and it failed quietly.
+  const directory = await mkdtemp(join(tmpdir(), 'hexscribe-migrate-'))
+  const path = join(directory, 'old.db')
+  t.after(() => rm(directory, { recursive: true, force: true }))
+
+  // An older schema: no `source_path`.
+  const { DatabaseSync } = await import('node:sqlite')
+  const old = new DatabaseSync(path)
+  old.exec(`CREATE TABLE runs (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'upload', path TEXT,
+    status TEXT NOT NULL, created INTEGER NOT NULL, finished INTEGER NOT NULL,
+    wall_ms INTEGER NOT NULL DEFAULT 0, engine TEXT, model TEXT, language TEXT,
+    task TEXT NOT NULL DEFAULT 'transcribe', diarize INTEGER NOT NULL DEFAULT 0,
+    merge INTEGER NOT NULL DEFAULT 0, audio_seconds REAL NOT NULL DEFAULT 0,
+    segments INTEGER NOT NULL DEFAULT 0, speakers INTEGER NOT NULL DEFAULT 0,
+    rtf REAL NOT NULL DEFAULT 0, error TEXT)`)
+  old.exec("INSERT INTO runs (id, name, status, created, finished) VALUES ('old', 'old.wav', 'done', 1, 2)")
+  old.close()
+
+  const ctx = new Context()
+  await ctx.plugin(storePlugin, { path })
+
+  // The new column is there, and writing through it works.
+  // A forward-slash path: the store never interprets one, and a Windows path
+  // in a TypeScript string literal is only an escaping puzzle.
+  ctx.store.saveRun(run('fresh', { source_path: '/tmp/upload.wav' }), transcript())
+  assert.equal(ctx.store.getRun('fresh')?.source_path, '/tmp/upload.wav')
+  assert.equal(ctx.store.getRun('old')?.name, 'old.wav', 'and the old rows are still there')
+
+  // Closed here, not in a hook: the hook that removes the directory was
+  // registered first and so runs first, with the file still open.
+  await ctx.root.fiber.dispose()
 })
