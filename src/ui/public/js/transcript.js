@@ -75,7 +75,10 @@ function renderText(item, segment, position, editing, onEdit) {
 
 export function renderSegments(list, transcript, onSeek, actions = {}) {
   const colours = speakerColours(transcript)
-  const { onContext, onSelect, onEdit, onBeginEdit, onSpeaker, selected = new Set(), editing = null } = actions
+  const {
+    onContext, onSelect, onEdit, onBeginEdit, onSpeaker, onSpeakerMenu,
+    selected = new Set(), editing = null,
+  } = actions
   list.replaceChildren(
     // Keyed by array position, never by a field on the segment: the server sends
     // OpenAI's `verbose_json`, whose segments carry `id`, while the editing
@@ -118,6 +121,16 @@ export function renderSegments(list, transcript, onSeek, actions = {}) {
             event.stopPropagation()
             onSpeaker(position, event)
           })
+          // Right-click asks about the speaker rather than about the row, so it
+          // gets its own menu instead of the utterance one.
+          if (onSpeakerMenu) {
+            speaker.addEventListener('contextmenu', (event) => {
+              if (event.shiftKey) return
+              event.preventDefault()
+              event.stopPropagation()
+              onSpeakerMenu(segment.speaker, event)
+            })
+          }
         }
         item.append(speaker)
       }

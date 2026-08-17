@@ -33,7 +33,9 @@ import {
   isContiguous,
   mergeAt,
   mergeRange,
+  mergeSpeakersInTranscript,
   nextSpeakerName,
+  speakerSummary,
   setSpeaker,
   setText,
   speakerNames,
@@ -43,6 +45,7 @@ import {
 import { closeMenu, offsetFromPoint, openMenu } from './menu.js'
 import { closeAside, isAsideOpen, openAside } from './aside.js'
 import { speakerPanel } from './panel-speaker.js'
+import { speakersPanel } from './panel-speakers.js'
 import { downloadPanel } from './panel-download.js'
 
 const els = {
@@ -67,6 +70,7 @@ const els = {
   undo: $('#undo'),
   edited: $('#edited'),
   download: $('#download'),
+  speakers: $('#speakers'),
   toolbar: $('#toolbar'),
   toolbarCount: $('#toolbar-count'),
   mergeSelected: $('#merge-selected'),
@@ -273,6 +277,7 @@ function render() {
     // are, and what to remember them as. Which speaker said a given utterance is
     // a different question, and it lives in the row menu and the toolbar.
     onSpeaker: (position) => openSpeakerPanel(current.segments[position]?.speaker),
+    onSpeakerMenu: (speaker, event) => openSpeakerChipMenu(speaker, event),
   })
   renderToolbar()
   els.undo.disabled = history.length === 0
@@ -357,6 +362,95 @@ function renameSpeaker(from, to) {
   render()
 }
 
+/**
+ * Which speaker the Speakers panel is examining.
+ *
+ * Held here rather than inside the panel because the panel is rebuilt on every
+ * edit — merging speakers re-renders it — and losing your place each time you
+ * merged would make merging six fragments six trips back.
+ */
+let examining = null
+
+/** The speakers panel, on whichever tab makes sense. */
+function openSpeakersPanel({ focus = examining, tab } = {}) {
+  if (!current) return
+  examining = focus ?? examining
+  const handle = openAside(
+    speakersPanel({
+      transcript: current,
+      focus: examining,
+      onMerge: (names, into) => {
+        const merged = mergeSpeakersInTranscript(current, names, into)
+        if (merged === current) return
+        history.push(current.segments)
+        current = merged
+        examining = into
+        render()
+        // Straight back to the list, which now has fewer rows in it: merging is
+        // usually done several times in a row.
+        openSpeakersPanel({ focus: into, tab: 'list' })
+      },
+      onJump: jumpTo,
+      onOpenSpeaker: openSpeakerPanel,
+      onFocus: (speaker) => openSpeakersPanel({ focus: speaker, tab: 'utterances' }),
+    }),
+  )
+  if (tab) handle?.show(tab)
+}
+
+/**
+ * Scroll the transcript to an utterance and play it.
+ *
+ * Both, because the question the panel is helping to answer — is this the same
+ * person? — is answered by ear, and the row is what tells you where you are.
+ */
+function jumpTo(position) {
+  const row = els.segments.children[position]
+  if (row) {
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    for (const other of els.segments.querySelectorAll('.is-jumped')) other.classList.remove('is-jumped')
+    // Re-triggering the animation needs the class gone for a frame.
+    requestAnimationFrame(() => row.classList.add('is-jumped'))
+  }
+  const segment = current?.segments[position]
+  if (segment && seekable) player?.seek(segment.start)
+}
+
+/** Right-click on a chip: the person, not the utterance. */
+function openSpeakerChipMenu(speaker, event) {
+  if (!speaker) return
+  const others = speakerSummary(current.segments)
+    .map((entry) => entry.name)
+    .filter((name) => name !== speaker)
+
+  openMenu(event.clientX, event.clientY, [
+    {
+      label: 'Show utterances',
+      onSelect: () => openSpeakersPanel({ focus: speaker, tab: 'utterances' }),
+    },
+    {
+      label: 'All speakers',
+      onSelect: () => openSpeakersPanel({ focus: speaker, tab: 'list' }),
+    },
+    {
+      label: 'Name this speaker',
+      onSelect: () => openSpeakerPanel(speaker),
+    },
+    // One level deep rather than a submenu: merging is the reason this menu
+    // exists, and burying it behind a hover would be perverse.
+    ...others.slice(0, 8).map((other) => ({
+      label: `Merge into ${other}`,
+      onSelect: () => {
+        const merged = mergeSpeakersInTranscript(current, [speaker], other)
+        if (merged === current) return
+        history.push(current.segments)
+        current = merged
+        render()
+      },
+    })),
+  ])
+}
+
 function openSpeakerPanel(speaker) {
   if (!speaker) return
   openAside(
@@ -402,10 +496,12 @@ els.mergeSelected.addEventListener('click', () => {
   edit(merged)
 })
 
-els.speakerSelected.addEventListener('click', (event) => {
+els.speakerSelected.addEventListener('click', () => {
   const bounds = els.speakerSelected.getBoundingClientRect()
   openSpeakerMenu(bounds.left, bounds.bottom + 4, [...selectedRows].sort((a, b) => a - b))
 })
+
+els.speakers.addEventListener('click', () => openSpeakersPanel({ tab: 'list' }))
 
 els.clearSelected.addEventListener('click', () => {
   selectedRows.clear()

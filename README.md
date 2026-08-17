@@ -764,6 +764,65 @@ utterance — but if you want turn-level boundaries independent of a transcript,
 `default: sherpa` in `cordis.yml` brings the old engine back. Both are registered;
 only the default changed.
 
+### Forty speakers, and what to do about them
+
+An hour-long interview came out as **45 speakers**. The cause was the merge rule:
+complete linkage joins two groups only when *every* pair across them is within
+the threshold, which on seven utterances is a useful guarantee and on five
+hundred is a trap — the threshold is really a promise about the worst pair in a
+group, and the worst pair gets worse the more samples there are.
+
+Clustering now runs in two passes with two thresholds, because they answer two
+different questions:
+
+| pass | asks | threshold |
+|---|---|---|
+| complete linkage | is this *pair of utterances* the same voice? | 0.60, deliberately loose |
+| centroids | are these two *groups* the same person? | 0.50, the calibrated one |
+
+A centroid describes a voice far better than any one utterance — the same
+person's centroids sit 0.12–0.49 apart across different recordings while
+different people start at 0.59, which is the whole basis of recognising somebody
+in a later file. So the second pass repairs what the first over-split. Measured:
+
+| | complete only | + centroids |
+|---|---|---|
+| one-speaker fixture | 1 ✓ | 1 ✓ |
+| three-speaker fixture | 3 ✓ | 3 ✓ |
+| 1.31 h interview | **45** | **12** |
+
+Not 2, and no threshold reaches 2. At 0.65 the interview does collapse to two —
+and so do two genuinely different people on the three-voice fixture, whose
+centroids sit at about 0.55. A wrongly merged pair has to be *noticed* before it
+can be fixed; pieces of one person can simply be merged. So the tuning errs
+toward splitting, and the rest is a judgement only somebody who can hear the
+recording can make.
+
+Which is what the twelve look like in practice: one speaker holding 482
+utterances over 76 minutes, and eleven holding 28 utterances totalling half a
+minute between them — "mhm", "ja", one-word interjections too short to place.
+
+### Merging speakers, and why it improves the next recording
+
+Click **Speakers** (or right-click any speaker chip). The panel has two tabs:
+
+- **Speakers** — every one of them, longest-speaking first, so the real people
+  are at the top and the debris is at the bottom. Tick two or more and merge.
+- **Utterances** — one speaker's lines, each clickable, which scrolls the
+  transcript there *and* plays it. Deciding whether `S7` and `S11` are the same
+  person is done by ear, and hunting six scattered lines through an hour-long
+  transcript is not a reasonable way to be asked to do it.
+
+Merging is worth more than tidying the page. The voice prints of the merged
+speakers are blended into one, weighted by how much speech is behind each, and
+that combined print is what the next recording is matched against. Six fragments
+of somebody rejoined by hand describe them better than any single fragment did —
+so correcting the clustering here is also how the library gets better at
+recognising that person later.
+
+A merged speaker also drops any *recognised as* claim it was carrying: the print
+it was matched on no longer exists, and keeping the claim would be a guess.
+
 ### The embedding model matters more than the clustering
 
 Five candidates were measured on the same audio, by embedding each known speaker

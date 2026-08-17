@@ -1234,3 +1234,159 @@ body {
 .rail__run.is-unfinished .rail__run-meta {
   color: var(--warn);
 }
+
+/* --- aside tabs --- */
+
+.aside__tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0 0.6rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.aside__tab {
+  padding: 0.45rem 0.6rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aside__tab:hover {
+  color: var(--ink);
+}
+
+.aside__tab.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* --- the speaker list --- */
+
+.speakers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.speakers__row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.1rem;
+  border-radius: 6px;
+}
+
+.speakers__row:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.speakers__tick {
+  flex: none;
+}
+
+.speakers__meta {
+  flex: 1;
+  min-width: 0;
+  padding: 0.15rem 0.2rem;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.76rem;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.speakers__meta:hover,
+.speakers__meta:focus-visible {
+  color: var(--ink);
+}
+
+.speakers__hint {
+  align-self: center;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+/* --- one speaker's utterances --- */
+
+.utterances {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.utterances__row {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.3rem 0.35rem;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.utterances__row:hover,
+.utterances__row:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.utterances__time {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  padding-top: 0.1rem;
+}
+
+.utterances__text {
+  flex: 1;
+  min-width: 0;
+  /* Two lines, then an ellipsis: this is an index, and the transcript itself is
+     one click away. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* The row the panel just jumped to, so the eye lands in the right place. */
+.segments li.is-jumped {
+  animation: jumped 1.4s ease-out;
+}
+
+@keyframes jumped {
+  from { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+  to { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .segments li.is-jumped {
+    animation: none;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+}

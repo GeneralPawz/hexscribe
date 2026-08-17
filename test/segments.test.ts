@@ -23,6 +23,11 @@ import {
   smartMerge,
   splitAt,
   timeAt,
+  blendVoices,
+  mergeSpeakers,
+  mergeSpeakersInTranscript,
+  speakerSummary,
+  utterancesOf,
   MERGE_DEFAULTS,
 } from '../src/ui/public/js/segments.js'
 
@@ -309,4 +314,124 @@ test('a new speaker takes the first free number', () => {
     'SPEAKER_01',
     'gaps are filled rather than skipped',
   )
+})
+
+// --- speakers: merging several into one -------------------------------
+
+const voiced = (index: number, start: number, end: number, speaker: string) =>
+  seg(index, start, end, `t${index}`, speaker)
+
+test('merging speakers reaches every utterance of each', () => {
+  // The reason this exists: a 575-utterance interview came out as 45 speakers,
+  // and most of them are the same two people.
+  const segments = [
+    voiced(0, 0, 5, 'SPEAKER_00'),
+    voiced(1, 5, 10, 'SPEAKER_03'),
+    voiced(2, 10, 15, 'SPEAKER_07'),
+    voiced(3, 15, 20, 'SPEAKER_01'),
+  ]
+
+  const merged = mergeSpeakers(segments, ['SPEAKER_03', 'SPEAKER_07'], 'SPEAKER_00')
+
+  assert.deepEqual(
+    merged.map((entry) => entry.speaker),
+    ['SPEAKER_00', 'SPEAKER_00', 'SPEAKER_00', 'SPEAKER_01'],
+  )
+  assert.equal(segments[1].speaker, 'SPEAKER_03', 'the original is untouched')
+})
+
+test('a merge that changes nothing returns the same array', () => {
+  const segments = [voiced(0, 0, 5, 'SPEAKER_00')]
+
+  assert.equal(mergeSpeakers(segments, ['SPEAKER_00'], 'SPEAKER_00'), segments, 'into itself')
+  assert.equal(mergeSpeakers(segments, [], 'SPEAKER_00'), segments, 'nothing named')
+  assert.equal(mergeSpeakers(segments, ['SPEAKER_09'], 'SPEAKER_00'), segments, 'nobody said that')
+})
+
+test('voice prints are blended by how much speech is behind each', () => {
+  // Why merging is worth more than tidying the page: the print built from the
+  // pieces is what the next recording is matched against.
+  const blended = blendVoices([
+    { embedding: [1, 0, 0], seconds: 300 },
+    { embedding: [0, 1, 0], seconds: 10 },
+  ])
+
+  assert.ok(blended)
+  assert.ok(blended!.embedding[0] > blended!.embedding[1] * 20, 'the long one dominates')
+  assert.equal(blended!.seconds, 310, 'and the evidence adds up')
+  assert.ok(Math.abs(Math.hypot(...blended!.embedding) - 1) < 1e-9, 'still a unit vector')
+})
+
+test('blending copes with nothing to blend', () => {
+  assert.equal(blendVoices([]), null)
+  assert.equal(blendVoices([{ embedding: [], seconds: 5 }]), null)
+  assert.equal(blendVoices([{ embedding: [0, 0, 0], seconds: 5 }]), null, 'a zero vector has no direction')
+})
+
+test('merging a transcript keeps its labels and its prints agreeing', () => {
+  // A stale print is worse than none: it is what a name gets stored against,
+  // and it would have the wrong person recognised next time.
+  const transcript = {
+    segments: [voiced(0, 0, 60, 'SPEAKER_00'), voiced(1, 60, 70, 'SPEAKER_02'), voiced(2, 70, 80, 'SPEAKER_01')],
+    voices: [
+      { speaker: 'SPEAKER_00', embedding: [1, 0, 0], seconds: 60, utterances: 1 },
+      { speaker: 'SPEAKER_02', embedding: [0, 1, 0], seconds: 10, utterances: 1, matched: { name: 'Bob', distance: 0.2 } },
+      { speaker: 'SPEAKER_01', embedding: [0, 0, 1], seconds: 10, utterances: 1 },
+    ],
+  }
+
+  const merged = mergeSpeakersInTranscript(transcript as never, ['SPEAKER_02'], 'SPEAKER_00') as never as typeof transcript
+
+  assert.deepEqual(merged.segments.map((s) => s.speaker), ['SPEAKER_00', 'SPEAKER_00', 'SPEAKER_01'])
+  assert.equal(merged.voices.length, 2, 'the absorbed print is gone')
+  const kept = merged.voices.find((v) => v.speaker === 'SPEAKER_00')!
+  assert.equal(kept.seconds, 70, 'and its evidence includes what it absorbed')
+  assert.equal(kept.utterances, 2)
+  assert.ok(kept.embedding[0] > kept.embedding[1], 'weighted toward the longer half')
+  assert.equal(merged.voices.find((v) => v.speaker === 'SPEAKER_02'), undefined)
+})
+
+test('a merged speaker stops claiming a recognition it no longer has evidence for', () => {
+  const transcript = {
+    segments: [voiced(0, 0, 10, 'SPEAKER_00'), voiced(1, 10, 20, 'SPEAKER_01')],
+    voices: [
+      { speaker: 'SPEAKER_00', embedding: [1, 0, 0], seconds: 10, utterances: 1, matched: { name: 'Mara', distance: 0.3 } },
+      { speaker: 'SPEAKER_01', embedding: [0, 1, 0], seconds: 10, utterances: 1 },
+    ],
+  }
+
+  const merged = mergeSpeakersInTranscript(transcript as never, ['SPEAKER_01'], 'SPEAKER_00') as never as typeof transcript
+
+  assert.equal(merged.voices[0].matched, undefined, 'the print it was matched on no longer exists')
+})
+
+test('a speaker summary says how much each one spoke, first speaker first', () => {
+  const segments = [
+    voiced(0, 0, 10, 'SPEAKER_01'),
+    voiced(1, 10, 40, 'SPEAKER_00'),
+    voiced(2, 40, 45, 'SPEAKER_01'),
+    seg(3, 45, 50, 'no speaker'),
+  ]
+
+  const summary = speakerSummary(segments)
+
+  assert.deepEqual(summary.map((entry) => entry.name), ['SPEAKER_01', 'SPEAKER_00'])
+  assert.equal(summary[0].utterances, 2)
+  assert.equal(summary[0].seconds, 15)
+  assert.equal(summary[1].seconds, 30)
+})
+
+test('the utterances of one speaker come back with where they are', () => {
+  // What the second tab lists, and what makes each row clickable.
+  const segments = [
+    voiced(0, 0, 5, 'SPEAKER_00'),
+    voiced(1, 5, 10, 'SPEAKER_01'),
+    voiced(2, 10, 15, 'SPEAKER_00'),
+  ]
+
+  const found = utterancesOf(segments, 'SPEAKER_00')
+
+  assert.deepEqual(found.map((entry) => entry.position), [0, 2], 'positions, so a click can scroll to them')
+  assert.equal(found[1].segment.start, 10)
+  assert.equal(utterancesOf(segments, 'SPEAKER_09').length, 0)
 })

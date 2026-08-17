@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from hexscribe_worker.diarize_utterances import (  # noqa: E402
+    DEFAULT_MERGE_THRESHOLD,
     DEFAULT_THRESHOLD,
     Utterance,
     UtteranceDiarizer,
@@ -62,7 +63,7 @@ def test_one_voice_is_not_split_by_a_stretch_that_sounds_different():
 def test_two_voices_do_not_chain_through_something_between_them():
     # Single linkage would merge all three: A-B and B-C are each close enough,
     # so the chain joins A to C even though A and C are far apart. Complete
-    # linkage refuses, which is why it is the merge rule.
+    # linkage refuses, which is why it is still the first pass.
     a = unit(1, 0, 0)
     between = unit(1, 1, 0)
     c = unit(0, 1, 0)
@@ -76,11 +77,45 @@ def test_two_voices_do_not_chain_through_something_between_them():
 def test_the_threshold_is_what_decides_the_count():
     # Distances here: a-b 0.11, b-c 0.55, a-c 1.00. Under complete linkage the
     # pair {a,b} sits 1.00 from c, because the *worse* of the two is what counts.
+    # The centroid pass is disabled here so this measures the first pass alone.
     vectors = np.array([unit(1, 0, 0), unit(1, 0.5, 0), unit(0, 1, 0)])
 
-    assert len(set(cluster(vectors, 1.05))) == 1, "generous: everyone is one person"
-    assert groups(cluster(vectors, 0.6)) == {frozenset({0, 1}), frozenset({2})}
-    assert len(set(cluster(vectors, 0.05))) == 3, "strict: nobody is anybody else"
+    assert len(set(cluster(vectors, 1.05, merge_threshold=0))) == 1, "generous: everyone is one person"
+    assert groups(cluster(vectors, 0.6, merge_threshold=0)) == {frozenset({0, 1}), frozenset({2})}
+    assert len(set(cluster(vectors, 0.05, merge_threshold=0))) == 3, "strict: nobody is anybody else"
+
+
+def test_the_centroid_pass_repairs_what_the_first_one_over_split():
+    # The fix for 45 speakers on an hour of audio. Complete linkage keeps these
+    # two groups apart because one pair across them is far; their centroids are
+    # plainly the same voice, which is the comparison that actually decides who
+    # somebody is.
+    left = [unit(1, 0.30, 0), unit(1, 0.35, 0)]
+    right = [unit(1, -0.30, 0), unit(1, -0.35, 0)]
+    vectors = np.array(left + right)
+
+    assert len(set(cluster(vectors, 0.2, merge_threshold=0))) > 1, "the first pass leaves them apart"
+    assert len(set(cluster(vectors, 0.2, merge_threshold=0.5))) == 1, "the second pass joins them"
+
+
+def test_the_centroid_pass_still_refuses_two_different_people():
+    # It repairs over-splitting; it must not invent under-splitting. A wrongly
+    # merged pair has to be noticed before it can be fixed, while pieces of one
+    # person can simply be merged.
+    vectors = np.array([unit(1, 0, 0), unit(1, 0.05, 0), unit(0, 1, 0), unit(0.05, 1, 0)])
+
+    assert len(set(cluster(vectors, 0.1, merge_threshold=DEFAULT_MERGE_THRESHOLD))) == 2
+
+
+def test_speakers_still_come_out_in_the_order_they_first_speak():
+    # Merging shuffles groups; the label a reader sees must not depend on that.
+    a, b = unit(1, 0, 0), unit(0, 1, 0)
+    labels = cluster(np.array([a, b, a, b]), 0.55)
+
+    assert labels[0] == 0, "whoever speaks first is speaker 0"
+    assert labels[1] == 1
+    assert labels[2] == 0
+    assert labels[3] == 1
 
 
 def test_edge_cases_do_not_raise():

@@ -13,7 +13,20 @@
  * modal would hide the thing being talked about.
  */
 
-/** @typedef {{ title: string, mount: (body: HTMLElement) => (() => void) | void }} Panel */
+/**
+ * @typedef {{ id: string, label: string, mount: (body: HTMLElement) => (() => void) | void }} Tab
+ * @typedef {{
+ *   title: string,
+ *   mount?: (body: HTMLElement) => (() => void) | void,
+ *   tabs?: Tab[],
+ *   active?: string,
+ *   onTab?: (id: string) => void,
+ * }} Panel
+ *
+ * A panel is either one body or a row of tabs. Tabs exist because two of these
+ * views are about the same thing at different scales — every speaker, and one
+ * speaker's utterances — and moving between them should not feel like leaving.
+ */
 
 let current = null
 
@@ -67,7 +80,54 @@ export function openAside(panel) {
   const body = document.createElement('div')
   body.className = 'aside__body'
 
-  host.append(header, body)
+  host.append(header)
+
+  // Tabs, when there are any. The strip goes under the title so the panel keeps
+  // one heading and the tabs read as places within it rather than as separate
+  // panels that happen to look alike.
+  let switchTab = null
+  // Whatever is currently mounted, tab or plain body, so closing the panel
+  // disposes it either way.
+  let disposeContent = () => {}
+
+  if (panel.tabs?.length) {
+    const strip = document.createElement('div')
+    strip.className = 'aside__tabs'
+    strip.setAttribute('role', 'tablist')
+
+    let activeId = panel.active ?? panel.tabs[0].id
+
+    const buttons = panel.tabs.map((tab) => {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'aside__tab'
+      button.textContent = tab.label
+      button.dataset.tab = tab.id
+      button.setAttribute('role', 'tab')
+      button.addEventListener('click', () => switchTab(tab.id))
+      strip.append(button)
+      return button
+    })
+
+    switchTab = (id) => {
+      const tab = panel.tabs.find((entry) => entry.id === id) ?? panel.tabs[0]
+      activeId = tab.id
+      for (const button of buttons) {
+        const on = button.dataset.tab === tab.id
+        button.classList.toggle('is-active', on)
+        button.setAttribute('aria-selected', String(on))
+      }
+      disposeContent()
+      body.replaceChildren()
+      disposeContent = tab.mount(body) ?? (() => {})
+      panel.onTab?.(tab.id)
+    }
+
+    host.append(strip, body)
+    switchTab(activeId)
+  } else {
+    host.append(body)
+  }
   // The class drives the transition; setting it after `hidden` is cleared means
   // the browser has a frame to lay the panel out off-screen before it moves.
   requestAnimationFrame(() => host.classList.add('is-open'))
@@ -75,7 +135,7 @@ export function openAside(panel) {
   // it is talking about.
   document.body.classList.add('has-aside')
 
-  const unmount = panel.mount(body) ?? (() => {})
+  if (!panel.tabs?.length) disposeContent = panel.mount?.(body) ?? (() => {})
 
   const onKey = (event) => {
     if (event.key !== 'Escape') return
@@ -88,8 +148,10 @@ export function openAside(panel) {
   host.addEventListener('keydown', onKey)
 
   current = {
+    /** Move to another tab from outside — what a speaker row does. */
+    show: switchTab,
     dispose(replacing = false) {
-      unmount()
+      disposeContent()
       host.removeEventListener('keydown', onKey)
       if (replacing) return
       host.classList.remove('is-open')
@@ -105,6 +167,7 @@ export function openAside(panel) {
   }
 
   if (!wasOpen) queueMicrotask(() => body.querySelector('input, select, button')?.focus())
+  return { show: (id) => switchTab?.(id) }
 }
 
 // --- small builders, shared by the panels ------------------------------

@@ -529,6 +529,78 @@ check('renaming reaches every utterance of that speaker', aside.renamedRows >= 1
   `${aside.renamedRows} rows show "${aside.chipText}"`)
 check('the close button closes it', aside.closedByButton)
 
+// --- speakers: the list, the utterances, and merging them ---
+// The run itself was transcribed without diarization, so two speakers are
+// assigned by hand first -- the panel does not care where the labels came from.
+const speakers = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 250))
+  const rows = () => [...document.querySelectorAll('#segments li')]
+  const menuItem = (label) =>
+    [...document.querySelectorAll('.menu__item')].find((b) => b.textContent.startsWith(label))
+
+  // Give row 0 one speaker and row 1 another.
+  for (const [index, pick] of [[0, 'New speaker'], [1, 'New speaker']]) {
+    rows()[index].dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))
+    await settle()
+    document.querySelector('#speaker-selected').click()
+    await settle()
+    menuItem(pick)?.click()
+    await settle()
+    document.querySelector('#clear-selected').click()
+    await settle()
+  }
+  const assigned = new Set([...document.querySelectorAll('#segments li .speaker')].map((c) => c.textContent))
+
+  // Right-click a chip: the person, not the utterance.
+  const chip = document.querySelector('#segments li .speaker')
+  const box = chip.getBoundingClientRect()
+  chip.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, clientX: box.left + 4, clientY: box.top + 4,
+  }))
+  await settle()
+  const chipMenu = [...document.querySelectorAll('.menu__item')].map((b) => b.textContent)
+
+  menuItem('All speakers')?.click()
+  await settle()
+  const tabs = [...document.querySelectorAll('.aside__tab')].map((b) => b.textContent)
+  const listed = document.querySelectorAll('.speakers__row').length
+
+  // Merge the two of them.
+  for (const tick of document.querySelectorAll('.speakers__tick')) {
+    tick.checked = true
+    tick.dispatchEvent(new Event('change'))
+  }
+  await settle()
+  const mergeLabel = [...document.querySelectorAll('#aside button')].find((b) => b.textContent.startsWith('Merge'))
+  const mergeText = mergeLabel?.textContent ?? ''
+  mergeLabel?.click()
+  await settle()
+
+  const after = new Set([...document.querySelectorAll('#segments li .speaker')].map((c) => c.textContent))
+  const listedAfter = document.querySelectorAll('.speakers__row').length
+
+  // And the utterances tab, with a row that jumps.
+  document.querySelector('.speakers__meta')?.click()
+  await settle()
+  const utterances = document.querySelectorAll('.utterances__row').length
+  document.querySelector('.utterances__row')?.click()
+  await settle()
+  const jumped = document.querySelectorAll('#segments li.is-jumped').length
+
+  return { assigned: assigned.size, chipMenu, tabs, listed, mergeText, after: after.size, listedAfter, utterances, jumped }
+})()`)
+
+check('two speakers were assigned to merge', speakers.assigned === 2, `${speakers.assigned} chips`)
+check('right-clicking a chip asks about the person', /Show utterances/.test(speakers.chipMenu.join('|')),
+  speakers.chipMenu.join(' · '))
+check('the speakers panel has both tabs', speakers.tabs.length === 2, speakers.tabs.join(' | '))
+check('listing every speaker', speakers.listed === 2, `${speakers.listed} rows`)
+check('and offering to merge the ticked ones', /^Merge 2 into/.test(speakers.mergeText), speakers.mergeText)
+check('merging leaves one speaker across the transcript', speakers.after === 1, `${speakers.after} distinct chips`)
+check('and one row in the list', speakers.listedAfter === 1)
+check('the utterances tab lists what they said', speakers.utterances === 2, `${speakers.utterances} utterances`)
+check('and clicking one jumps to it', speakers.jumped === 1)
+
 // "It stays green until something new is dropped" is a claim about a timer that
 // must *not* fire, and the only way to check that is to wait past when the old
 // one did (4 s) and look again.

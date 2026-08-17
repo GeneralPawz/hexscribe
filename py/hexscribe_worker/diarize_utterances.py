@@ -46,13 +46,27 @@ import numpy as np
 from . import audio as audio_mod
 from .diarize import DEFAULT_THREADS, DiarizationUnavailable, Turn, _label
 
-#: Cosine distance below which two utterances are the same voice.
+#: Cosine distance below which two *utterances* are the same voice.
 #:
-#: Measured on the fixtures: within-speaker distances top out at 0.49 (one
-#: speaker's whispered line against her own normal voice) and between-speaker
-#: distances start at 0.59, so anything in that gap works. 0.55 sits in the
-#: middle of it rather than at either edge.
-DEFAULT_THRESHOLD = 0.55
+#: The first of two thresholds, and the looser one, because this pass only has
+#: to avoid joining things that are obviously different -- the second pass does
+#: the careful work. Raised from 0.55 after measuring a 1.31 h interview: the
+#: pair-wise spread within one speaker is much wider than the spread between
+#: their centroids, so a threshold calibrated on centroids fragments here.
+DEFAULT_THRESHOLD = 0.60
+
+#: Cosine distance below which two *groups* are the same person.
+#:
+#: The calibrated one. Measured across recordings: the same person's centroids
+#: sit 0.12-0.49 apart and different people start at 0.59, so this is the
+#: comparison worth trusting -- and the voice library recognises people across
+#: files by exactly this measure.
+#:
+#: 0.50 rather than 0.55 because on the three-speaker fixture two genuinely
+#: different voices sit at ~0.55, and merging them is a worse error than leaving
+#: a person in two pieces: the pieces can be merged by hand, and a wrongly
+#: merged pair has to be noticed first.
+DEFAULT_MERGE_THRESHOLD = 0.50
 
 #: Below this, an utterance is too short to embed reliably and is left
 #: unlabelled rather than guessed at. A speaker embedding wants a second or two
@@ -221,16 +235,31 @@ def _profiles(
     return profiles
 
 
-def cluster(vectors: np.ndarray, threshold: float) -> list[int]:
-    """Agglomerative clustering with complete linkage.
+def cluster(vectors: np.ndarray, threshold: float, merge_threshold: float | None = None) -> list[int]:
+    """Group utterance embeddings into speakers, in two passes.
 
-    Complete linkage, not average or single: it merges two groups only when
-    *every* pair across them is close enough. Single linkage would chain two
-    voices together through one ambiguous utterance sitting between them, which
-    is exactly the failure this module exists to avoid.
+    **Complete linkage first**, at a deliberately loose threshold. Merging only
+    when every pair across two groups is close keeps one ambiguous utterance
+    from chaining two voices together, which single linkage does immediately and
+    average linkage does eventually. What it costs is fragmentation: the
+    threshold is really a promise about the *worst* pair in a group, and the
+    worst pair gets worse the more utterances there are. A 1.31 h interview came
+    out as 45 speakers.
 
-    The stopping rule is the threshold, not a cluster count: the number of
-    speakers is what we are trying to find out.
+    **Then the centroids.** A centroid describes a voice far better than any one
+    utterance of it -- measured, the same person's centroids sit 0.12-0.49 apart
+    across different recordings while different people start at 0.59, which is
+    the whole basis of recognising somebody in a later file. So once there are
+    groups, asking whether two centroids are the same person is a better
+    question than asking about their members, and it repairs what the first pass
+    over-split. The same interview comes out as 11.
+
+    Not as 2, which is what it should be. No threshold reaches 2 without also
+    merging two genuinely different speakers on the three-voice fixture, whose
+    centroids sit at about 0.55 -- and a wrongly merged pair has to be noticed
+    before it can be fixed, while pieces of one person can simply be merged.
+    That last step is a judgement only somebody who can hear the recording is
+    able to make, which is what merging speakers by hand is for.
     """
     count = len(vectors)
     if count == 0:
@@ -242,6 +271,7 @@ def cluster(vectors: np.ndarray, threshold: float) -> list[int]:
     np.fill_diagonal(distance, np.inf)
 
     members = [[i] for i in range(count)]
+    sizes = np.ones(count)
     alive = np.ones(count, dtype=bool)
 
     while alive.sum() > 1:
@@ -250,8 +280,8 @@ def cluster(vectors: np.ndarray, threshold: float) -> list[int]:
         if distance[a, b] > threshold:
             break
 
-        # Complete linkage: the merged cluster's distance to everything else is
-        # the *worse* of the two, which is what makes the guarantee above hold.
+        # Complete linkage: the merged group's distance to everything else is
+        # the *worse* of the two, which is what refuses to chain.
         merged = np.maximum(distance[a], distance[b])
         distance[a] = merged
         distance[:, a] = merged
@@ -259,11 +289,49 @@ def cluster(vectors: np.ndarray, threshold: float) -> list[int]:
         distance[b, :] = np.inf
         distance[:, b] = np.inf
         alive[b] = False
+        sizes[a] += sizes[b]
         members[a] = members[a] + members[b]
         members[b] = []
 
+    groups = [m for m in members if m]
+    groups = _merge_centroids(
+        vectors, groups, DEFAULT_MERGE_THRESHOLD if merge_threshold is None else merge_threshold
+    )
+
     labels = [0] * count
-    for index, group in enumerate(m for m in members if m):
+    for index, group in enumerate(groups):
         for item in group:
             labels[item] = index
     return labels
+
+
+def _merge_centroids(vectors: np.ndarray, groups: list[list[int]], threshold: float) -> list[list[int]]:
+    """Join groups whose centroids are the same voice.
+
+    Repeatedly, because merging two changes the centroid and can bring a third
+    within reach. Closest pair first, so the most confident join happens before
+    the marginal ones.
+    """
+    groups = [list(group) for group in groups]
+    while len(groups) > 1:
+        centroids = []
+        for group in groups:
+            total = vectors[group].sum(axis=0)
+            norm = float(np.linalg.norm(total))
+            centroids.append(total / norm if norm else total)
+        centroids = np.array(centroids)
+
+        between = 1.0 - centroids @ centroids.T
+        np.fill_diagonal(between, np.inf)
+        flat = int(np.argmin(between))
+        a, b = divmod(flat, len(groups))
+        if between[a, b] > threshold:
+            break
+
+        groups[a] = groups[a] + groups[b]
+        groups.pop(b)
+
+    # In the order the speakers first appear, so SPEAKER_00 is whoever talks
+    # first even after the groups have been shuffled by merging.
+    groups.sort(key=min)
+    return groups

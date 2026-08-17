@@ -225,6 +225,142 @@ export function speakerNames(segments) {
 }
 
 /**
+ * Everything one speaker said, with where to find it.
+ *
+ * @param {Segment[]} segments @param {string} speaker
+ * @returns {{ position: number, segment: Segment }[]}
+ */
+export function utterancesOf(segments, speaker) {
+  const found = []
+  segments.forEach((segment, position) => {
+    if (segment.speaker === speaker) found.push({ position, segment })
+  })
+  return found
+}
+
+/**
+ * How much each speaker said, in the order they first speak.
+ *
+ * @param {Segment[]} segments
+ * @returns {{ name: string, utterances: number, seconds: number, first: number }[]}
+ */
+export function speakerSummary(segments) {
+  const seen = new Map()
+  segments.forEach((segment, position) => {
+    if (!segment.speaker) return
+    const entry = seen.get(segment.speaker) ?? {
+      name: segment.speaker,
+      utterances: 0,
+      seconds: 0,
+      first: position,
+    }
+    entry.utterances += 1
+    entry.seconds += Math.max(0, segment.end - segment.start)
+    seen.set(segment.speaker, entry)
+  })
+  return [...seen.values()]
+}
+
+/**
+ * Make several speakers one.
+ *
+ * Diarization splits a person more often than it merges two, and on a long
+ * recording it splits them a lot — one voice heard across an hour drifts, and a
+ * clustering strict enough to keep two people apart is strict enough to cut one
+ * person into pieces. Rejoining them is a judgement only a listener can make,
+ * so it is an operation rather than a parameter.
+ *
+ * @param {Segment[]} segments @param {string[]} names @param {string} into
+ * @returns {Segment[]}
+ */
+export function mergeSpeakers(segments, names, into) {
+  const absorbed = new Set(names.filter((name) => name && name !== into))
+  if (!absorbed.size) return segments
+
+  let changed = false
+  const next = segments.map((segment) => {
+    if (!segment.speaker || !absorbed.has(segment.speaker)) return segment
+    changed = true
+    return { ...segment, speaker: into }
+  })
+  return changed ? next : segments
+}
+
+/**
+ * One voice print from several, weighted by how much speech is behind each.
+ *
+ * The reason merging speakers is worth doing at all beyond tidying the page: a
+ * print built from four fragments of the same person is a better description of
+ * them than any one fragment, and it is what the next recording is matched
+ * against. An hour of somebody, split six ways by the clustering and rejoined by
+ * hand, produces a better print than a clean thirty-second sample would.
+ *
+ * @param {{embedding: number[], seconds: number}[]} voices
+ * @returns {{embedding: number[], seconds: number} | null}
+ */
+export function blendVoices(voices) {
+  const usable = voices.filter((voice) => voice?.embedding?.length)
+  if (!usable.length) return null
+
+  const size = usable[0].embedding.length
+  const total = new Array(size).fill(0)
+  let seconds = 0
+  for (const voice of usable) {
+    if (voice.embedding.length !== size) continue // a different model; not comparable
+    const weight = voice.seconds > 0 ? voice.seconds : 1
+    for (let i = 0; i < size; i++) total[i] += voice.embedding[i] * weight
+    seconds += voice.seconds ?? 0
+  }
+
+  const norm = Math.hypot(...total)
+  if (!norm) return null
+  return { embedding: total.map((value) => value / norm), seconds }
+}
+
+/**
+ * Merge speakers in a whole transcript, prints included.
+ *
+ * Kept together because doing one without the other leaves a transcript whose
+ * labels and voice prints disagree — and the prints are what a name is stored
+ * against, so a stale one gets the wrong person recognised later.
+ *
+ * @param {object} transcript @param {string[]} names @param {string} into
+ */
+export function mergeSpeakersInTranscript(transcript, names, into) {
+  const segments = mergeSpeakers(transcript.segments, names, into)
+  if (segments === transcript.segments) return transcript
+
+  const absorbed = new Set(names.filter((name) => name !== into))
+  const involved = (transcript.voices ?? []).filter(
+    (voice) => voice.speaker === into || absorbed.has(voice.speaker),
+  )
+  const blended = blendVoices(involved)
+
+  const voices = (transcript.voices ?? [])
+    .filter((voice) => !absorbed.has(voice.speaker))
+    .map((voice) =>
+      voice.speaker === into && blended
+        ? {
+            ...voice,
+            embedding: blended.embedding,
+            seconds: blended.seconds,
+            utterances: involved.reduce((sum, entry) => sum + (entry.utterances ?? 0), 0),
+            // Whatever it was recognised as was recognised from a print that no
+            // longer exists. Claiming the match still holds would be a guess.
+            matched: undefined,
+          }
+        : voice,
+    )
+
+  return {
+    ...transcript,
+    segments,
+    speakers: [...new Set(segments.map((segment) => segment.speaker).filter(Boolean))].sort(),
+    ...(transcript.voices ? { voices } : {}),
+  }
+}
+
+/**
  * The next unused `SPEAKER_NN`.
  *
  * Numbered rather than named because a name would be a guess; renaming people
