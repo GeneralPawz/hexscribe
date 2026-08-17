@@ -1,0 +1,36 @@
+[project]
+name = "hexscribe-worker"
+version = "0.1.0"
+description = "NPU (Hexagon/QNN) speech-to-text worker for hexscribe"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # The asset table for qualcomm/Whisper-Small-Quantized (QAIRT 2.45) names
+    # ONNX Runtime 1.27.1; the precompiled QNN context binaries are validated
+    # against the runtime that produced them, so this is a real pin, not a floor.
+    "onnxruntime>=1.27,<1.28",
+    # Plugin EP library (QAIRT). Registered at runtime via
+    # ort.register_execution_provider_library() -- see engine/qnn.py.
+    "onnxruntime-qnn>=2.4 ; platform_system == 'Windows' and platform_machine == 'ARM64'",
+    "numpy>=2.1",
+    # PyAV is the only mainstream audio lib with win_arm64 wheels; it gives us
+    # FFmpeg decode + 16 kHz mono resampling without librosa/soundfile/soxr.
+    "av>=17,<18",
+    # Rust tokenizer with an abi3 win_arm64 wheel from 0.22.2 on. Lets us decode
+    # Whisper tokens without pulling in transformers -> torch (no PyPI win_arm64).
+    "tokenizers>=0.22.2",
+    # Speaker diarization (pyannote segmentation + embeddings + clustering) as
+    # pure ONNX. One of the very few audio-ML packages shipping a win_arm64
+    # wheel, which is what makes local diarization possible here at all -- the
+    # usual stack (pyannote.audio) needs torch + torchaudio, and torchaudio has
+    # no wheels for this platform. Note it bundles its *own* onnxruntime; see
+    # hexscribe_worker/diarize.py for why that is safe here.
+    "sherpa-onnx>=1.13",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,25 @@
+{
+  "name": "hexscribe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local speech-to-text on the Qualcomm Hexagon NPU, composed with Cordis",
+  "scripts": {
+    "start": "node --import tsx node_modules/@deepseek-ai/cordis/bin.js",
+    "doctor": "node --import tsx node_modules/@deepseek-ai/cordis/bin.js --doctor",
+    "serve": "node --import tsx scripts/serve.mjs",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis-plugin-include": "^1.0.6",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.2",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}

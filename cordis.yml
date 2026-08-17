@@ -1,0 +1,122 @@
+# The application, as composition.
+#
+# Every capability below is a plugin; nothing here is wired in code. Swapping the
+# NPU engine for a remote one is an edit to this file, not to any consumer:
+# `cli` injects the service name `asr`, never an implementation.
+
+# The ASR seam: engine registry, request/finalize waterfalls, segment events.
+- name: './src/asr.ts'
+  config:
+    default: qnn
+
+# Owns the Python NPU worker process. Starting and stopping it is an effect of
+# this entry's lifetime -- delete the line and the process is gone.
+- name: './src/worker-python.ts'
+  config:
+    python: py/.venv/Scripts/python.exe
+    modelDir: models/whisper-small-qnn/whisper_small_quantized-precompiled_qnn_onnx-w8a16-qualcomm_snapdragon_x_elite
+    tokenizer: models/whisper-small-tokenizer/tokenizer.json
+    # Diarization models. Omit either one and the worker starts without
+    # diarization; `--diarize` then fails loudly instead of quietly doing nothing.
+    segmentationModel: models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx
+    embeddingModel: models/wespeaker_en_voxceleb_CAM++.onnx
+    # The utterance engine embeds voices rather than segmenting audio, so it
+    # needs no segmentation model -- and a different embedding model, because
+    # the English VoxCeleb one above could not tell this project's own German
+    # test recording apart from itself. See py/hexscribe_worker/diarize_utterances.py.
+    utteranceEmbeddingModel: models/3dspeaker_campplus_sv_zh_en.onnx
+
+# Registers the `qnn` engine into `asr`, backed by that worker.
+- name: './src/engine-qnn.ts'
+
+# A second engine behind the same seam: any OpenAI-compatible endpoint.
+# Enable it to compare against the NPU, or to fall back when off this hardware.
+- name: './src/engine-remote.ts'
+  disabled: true
+  config:
+    name: remote
+    url: http://127.0.0.1:9000/v1/audio/transcriptions
+    model: whisper-1
+
+# Who spoke when: a seam of its own, because it answers a different question
+# about the same audio, runs on the CPU, and costs several times a transcription.
+- name: './src/diarize.ts'
+  config:
+    default: utterances
+
+# Clusters the utterances Whisper found. The default, because it is both more
+# accurate and much cheaper on the recordings in test/fixtures.
+- name: './src/diarize-utterances.ts'
+
+# The textbook pipeline: pyannote segments the audio, then the regions cluster.
+# Still here because it answers "who spoke when" without needing a transcript,
+# which is a different question. Set `default: sherpa` above to use it.
+- name: './src/diarize-sherpa.ts'
+
+# Names this machine has been told. Diarization can say "these utterances are
+# one person"; only a human can say who. Storing the name against the voice
+# print means it only has to be given once. Remove this and speakers stay
+# numbered -- nothing else changes. The file is local and deleting it forgets
+# everyone.
+- name: './src/voices.ts'
+  config:
+    path: voices.json
+
+# Attaches speakers to finished transcripts, when the request asked for them.
+# Neither the ASR engine nor the diarizer knows this plugin exists.
+- name: './src/speakers.ts'
+
+# Rejoins sentences the decoder cut at a window boundary. Its rule is shared
+# with the browser, so clicking "merge" by hand does exactly the same thing.
+- name: './src/postproc-merge.ts'
+  config:
+    enabled: true
+
+# Cooperating post-processor: corrects vocabulary the model mishears.
+# It never imports the engine, and the engine never knows it exists.
+- name: './src/postproc-glossary.ts'
+  config:
+    terms:
+      Hexascribe: hexscribe
+      Kordis: Cordis
+
+# Two front-ends over the same seam, and they are mutually exclusive: a CLI runs
+# once and unwinds the application, a server stays up. `disabled` is evaluated at
+# every mount decision, so the environment picks which one this composition is.
+# `scripts/serve.mjs` sets HEXSCRIBE_SERVE.
+
+# Command-line front-end.
+- name: './src/cli.ts'
+  disabled: !!js process.env.HEXSCRIBE_SERVE === '1'
+  config:
+    language: de
+    format: text
+
+# HTTP front-end: OpenAI-compatible /v1/audio/*.
+- name: './src/serve/index.ts'
+  disabled: !!js process.env.HEXSCRIBE_SERVE !== '1'
+  config:
+    host: !!js process.env.HEXSCRIBE_HOST ?? '127.0.0.1'
+    port: !!js Number(process.env.HEXSCRIBE_PORT ?? 9000)
+    apiKey: !!js process.env.HEXSCRIBE_API_KEY
+    language: de
+
+# Transcriptions that outlive the request that asked for them. An hour of audio
+# is minutes of NPU; holding an HTTP connection open for it means no progress,
+# and nothing at all if the tab closes. Remove this and `background=true` is
+# refused with a message saying so, while everything else works as before.
+- name: './src/jobs.ts'
+  config:
+    retainMinutes: 60
+
+- name: './src/jobs-http.ts'
+
+# The voice library over HTTP, for front-ends that let a person type a name.
+# Separate from `voices.ts` so the library works headless; it injects `serve`,
+# so in CLI mode it never starts.
+- name: './src/voices-http.ts'
+
+# Browser front-end, mounted onto the server through the public route registry.
+# It injects `serve`, so in CLI mode it simply never starts. Delete this entry
+# and the server is a bare JSON API again.
+- name: './src/ui/index.ts'

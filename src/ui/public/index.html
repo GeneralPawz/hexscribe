@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>hexscribe</title>
+    <link rel="stylesheet" href="/ui/app.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎙️</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="bar">
+      <h1>hexscribe</h1>
+      <p class="tagline">local speech to text on the Hexagon NPU</p>
+      <span id="status" class="badge badge--muted">checking…</span>
+    </header>
+
+    <main>
+      <section class="panel">
+        <form id="form">
+          <label id="drop" class="drop" for="file" tabindex="0" data-state="waiting">
+            <input id="file" name="file" type="file" accept="audio/*,video/*" hidden />
+            <strong id="drop-title">Drop audio here</strong>
+            <span id="drop-hint" class="hint">or click to choose &middot; anything FFmpeg can open</span>
+          </label>
+
+          <div class="fields">
+            <label>
+              Language
+              <input id="language" type="text" value="de" size="4" placeholder="auto" />
+            </label>
+            <label>
+              Model
+              <select id="model"></select>
+            </label>
+            <label>
+              Task
+              <select id="task">
+                <option value="transcribe">Transcribe</option>
+                <option value="translate">Translate to English</option>
+              </select>
+            </label>
+            <label class="check" title="Runs on the CPU and takes several times as long as the transcription">
+              <input id="diarize" type="checkbox" />
+              Identify speakers
+            </label>
+            <label class="check" title="Rejoin sentences the decoder split at a window boundary">
+              <input id="merge" type="checkbox" checked />
+              Merge split sentences
+            </label>
+            <!-- Only useful while this tab exists; the job itself survives
+                 without it. Hidden entirely where the browser has no
+                 notifications to give. -->
+            <label id="notify-field" class="check" title="Show progress and completion in the Windows notification centre. The tab must stay open.">
+              <input id="notify" type="checkbox" />
+              Notify me
+            </label>
+            <button id="submit" type="submit" disabled>Transcribe</button>
+          </div>
+        </form>
+
+        <p id="error" class="error" hidden></p>
+
+      </section>
+
+      <section id="result" class="panel" hidden>
+        <div class="result-bar">
+          <span id="summary" class="summary"></span>
+          <div class="actions">
+            <span id="edited" class="badge badge--muted" hidden>edited</span>
+            <button id="undo" type="button" disabled>Undo</button>
+            <button type="button" data-copy>Copy text</button>
+            <button id="download" type="button">Download…</button>
+          </div>
+        </div>
+        <!-- Only when part of the audio could not be decoded. Not an error:
+             the transcript is good, and a little of it is missing. -->
+        <p id="damage" class="damage" hidden></p>
+
+        <audio id="audio" class="player" controls preload="metadata" hidden></audio>
+
+        <!-- Only present while rows are selected: it belongs to the selection,
+             not to the page. -->
+        <div id="toolbar" class="toolbar" hidden>
+          <span id="toolbar-count" class="toolbar__count"></span>
+          <button id="merge-selected" class="tool tool--primary" type="button">Merge</button>
+          <button id="speaker-selected" class="tool" type="button">Speaker</button>
+          <button id="clear-selected" class="tool" type="button">Clear</button>
+        </div>
+
+        <ol id="segments" class="segments"></ol>
+      </section>
+    </main>
+
+    <!-- One panel, many contents: a speaker's identity, the download options,
+         whatever comes next. Hidden until something asks for it. -->
+    <aside id="aside" class="aside" aria-label="Details" hidden></aside>
+
+    <script type="module" src="/ui/js/main.js"></script>
+  </body>
+</html>
