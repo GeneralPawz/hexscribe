@@ -1390,3 +1390,20 @@ body {
     background: color-mix(in srgb, var(--accent) 14%, transparent);
   }
 }
+
+/* A scope label inside a menu. Not explanatory text: it is what keeps an action
+   meant for one utterance from being read as one meant for every utterance of
+   that speaker. */
+.menu__heading {
+  margin: 0.35rem 0 0.1rem;
+  padding: 0 0.6rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.menu__heading:first-child {
+  margin-top: 0;
+}

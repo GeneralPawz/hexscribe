@@ -277,7 +277,7 @@ function render() {
     // are, and what to remember them as. Which speaker said a given utterance is
     // a different question, and it lives in the row menu and the toolbar.
     onSpeaker: (position) => openSpeakerPanel(current.segments[position]?.speaker),
-    onSpeakerMenu: (speaker, event) => openSpeakerChipMenu(speaker, event),
+    onSpeakerMenu: (speaker, position, event) => openSpeakerChipMenu(speaker, position, event),
   })
   renderToolbar()
   els.undo.disabled = history.length === 0
@@ -416,14 +416,52 @@ function jumpTo(position) {
   if (segment && seekable) player?.seek(segment.start)
 }
 
-/** Right-click on a chip: the person, not the utterance. */
-function openSpeakerChipMenu(speaker, event) {
+/**
+ * Right-click on a chip: this utterance, or this speaker.
+ *
+ * Both, and labelled as such. The chip is what you point at when a label is
+ * wrong, and "wrong" means two completely different things — either the
+ * diarizer put *this line* with the wrong person, or it split one person into
+ * several and they all need joining. An earlier version of this menu offered
+ * only the second, so the obvious click on a single misassigned line would have
+ * moved every other line of that speaker with it.
+ *
+ * The counts are the safeguard: an action that says "7 utterances" cannot be
+ * mistaken for one that says "this utterance".
+ */
+function openSpeakerChipMenu(speaker, position, event) {
   if (!speaker) return
-  const others = speakerSummary(current.segments)
-    .map((entry) => entry.name)
-    .filter((name) => name !== speaker)
+  const summary = speakerSummary(current.segments)
+  const mine = summary.find((entry) => entry.name === speaker)
+  // Longest-speaking first, and only a handful: with a dozen speakers the tail
+  // is one-utterance debris that nobody moves a line *to*, and a menu of
+  // twenty-two entries is not a menu. `All speakers` opens the full list.
+  const others = summary
+    .filter((entry) => entry.name !== speaker)
+    .sort((a, b) => b.seconds - a.seconds)
+  const short = (name) => (name.startsWith('SPEAKER_') ? name.replace(/^SPEAKER_0*/, 'S') : name)
+
+  // When rows are selected and this is one of them, the per-utterance half acts
+  // on the selection -- the same rule the row menu and the toolbar already use.
+  const targets = speakerTargets(position)
+  const scope = targets.length > 1 ? `these ${targets.length} utterances` : 'this utterance'
 
   openMenu(event.clientX, event.clientY, [
+    { heading: scope },
+    ...others.slice(0, 5).map((entry) => ({
+      label: `Move to ${short(entry.name)}`,
+      onSelect: () => edit(setSpeaker(current.segments, targets, entry.name)),
+    })),
+    {
+      label: 'Move to a new speaker',
+      onSelect: () => edit(setSpeaker(current.segments, targets, nextSpeakerName(current.segments))),
+    },
+    {
+      label: 'Remove the label',
+      onSelect: () => edit(setSpeaker(current.segments, targets, null)),
+    },
+
+    { heading: `${short(speaker)} · ${mine?.utterances ?? 0} utterances` },
     {
       label: 'Show utterances',
       onSelect: () => openSpeakersPanel({ focus: speaker, tab: 'utterances' }),
@@ -436,12 +474,11 @@ function openSpeakerChipMenu(speaker, event) {
       label: 'Name this speaker',
       onSelect: () => openSpeakerPanel(speaker),
     },
-    // One level deep rather than a submenu: merging is the reason this menu
-    // exists, and burying it behind a hover would be perverse.
-    ...others.slice(0, 8).map((other) => ({
-      label: `Merge into ${other}`,
+    // Whole-speaker, and it says how many it would take with it.
+    ...others.slice(0, 3).map((entry) => ({
+      label: `Merge all ${mine?.utterances ?? 0} into ${short(entry.name)}`,
       onSelect: () => {
-        const merged = mergeSpeakersInTranscript(current, [speaker], other)
+        const merged = mergeSpeakersInTranscript(current, [speaker], entry.name)
         if (merged === current) return
         history.push(current.segments)
         current = merged

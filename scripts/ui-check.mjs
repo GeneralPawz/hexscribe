@@ -559,7 +559,27 @@ const speakers = await evaluate(`(async () => {
   }))
   await settle()
   const chipMenu = [...document.querySelectorAll('.menu__item')].map((b) => b.textContent)
+  const headings = [...document.querySelectorAll('.menu__heading')].map((h) => h.textContent)
 
+  // Move just this line to the other speaker, and check nothing else followed.
+  // Rows 0 and 1 have different speakers, so a per-utterance move makes them
+  // match while a speaker-wide one would too -- so row 2 onwards is the tell.
+  const before = rows().map((r) => r.querySelector('.speaker')?.textContent ?? '')
+  menuItem('Move to')?.click()
+  await settle()
+  const afterMove = rows().map((r) => r.querySelector('.speaker')?.textContent ?? '')
+  const movedOne = {
+    changed: before.filter((v, i) => v !== afterMove[i]).length,
+    // The two rows should now agree, which is what "moved to" means.
+    agree: afterMove[0] === afterMove[1],
+  }
+  document.querySelector('#undo').click()
+  await settle()
+
+  chip.dispatchEvent(new MouseEvent('contextmenu', {
+    bubbles: true, clientX: box.left + 4, clientY: box.top + 4,
+  }))
+  await settle()
   menuItem('All speakers')?.click()
   await settle()
   const tabs = [...document.querySelectorAll('.aside__tab')].map((b) => b.textContent)
@@ -587,10 +607,17 @@ const speakers = await evaluate(`(async () => {
   await settle()
   const jumped = document.querySelectorAll('#segments li.is-jumped').length
 
-  return { assigned: assigned.size, chipMenu, tabs, listed, mergeText, after: after.size, listedAfter, utterances, jumped }
+  return {
+    assigned: assigned.size, chipMenu, headings, movedOne, tabs, listed, mergeText,
+    after: after.size, listedAfter, utterances, jumped,
+  }
 })()`)
 
 check('two speakers were assigned to merge', speakers.assigned === 2, `${speakers.assigned} chips`)
+check('the chip menu separates the two scopes', speakers.headings.length === 2, speakers.headings.join(' / '))
+check('one misassigned line can be moved on its own',
+  speakers.movedOne?.changed === 1 && speakers.movedOne?.agree === true,
+  `${speakers.movedOne?.changed} row changed, and it now matches the one it moved to`)
 check('right-clicking a chip asks about the person', /Show utterances/.test(speakers.chipMenu.join('|')),
   speakers.chipMenu.join(' · '))
 check('the speakers panel has both tabs', speakers.tabs.length === 2, speakers.tabs.join(' | '))

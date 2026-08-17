@@ -813,6 +813,25 @@ Click **Speakers** (or right-click any speaker chip). The panel has two tabs:
   person is done by ear, and hunting six scattered lines through an hour-long
   transcript is not a reasonable way to be asked to do it.
 
+**One line at a time, too.** Right-clicking a chip offers both scopes, labelled
+and counted, because "this label is wrong" means two completely different things
+— either the diarizer put *this line* with the wrong person, or it split one
+person into several:
+
+```
+THIS UTTERANCE
+  Move to S · Move to S3 · Move to a new speaker · Remove the label
+S1 · 7 UTTERANCES
+  Show utterances · All speakers · Name this speaker · Merge all 7 into S
+```
+
+The counts are the safeguard: an entry saying *all 7* cannot be misread as one
+meaning *this one*. An earlier version of that menu offered only the
+speaker-wide half, so the obvious click on a single misassigned line would have
+taken every other line of that speaker with it. Only the most substantial
+speakers are listed — with a dozen of them the tail is one-utterance debris
+nobody moves a line *to*, and *All speakers* opens the full list.
+
 Merging is worth more than tidying the page. The voice prints of the merged
 speakers are blended into one, weighted by how much speech is behind each, and
 that combined print is what the next recording is matched against. Six fragments

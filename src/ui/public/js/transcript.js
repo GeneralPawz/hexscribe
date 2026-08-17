@@ -128,7 +128,7 @@ export function renderSegments(list, transcript, onSeek, actions = {}) {
               if (event.shiftKey) return
               event.preventDefault()
               event.stopPropagation()
-              onSpeakerMenu(segment.speaker, event)
+              onSpeakerMenu(segment.speaker, position, event)
             })
           }
         }

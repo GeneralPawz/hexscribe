@@ -22,7 +22,10 @@ export function closeMenu() {
 /**
  * @param {number} x viewport coordinates, usually the pointer
  * @param {number} y
- * @param {Array<{label: string, checked?: boolean, disabled?: boolean, onSelect?: () => void}>} items
+ * @param {Array<
+ *   { heading: string } |
+ *   { label: string, checked?: boolean, disabled?: boolean, onSelect?: () => void }
+ * >} items
  */
 export function openMenu(x, y, items) {
   closeMenu()
@@ -32,7 +35,19 @@ export function openMenu(x, y, items) {
   menu.className = 'menu'
   menu.setAttribute('role', 'menu')
 
-  const buttons = items.map((item) => {
+  const buttons = []
+  for (const item of items) {
+    // A heading, not an item: it names the scope the entries under it apply to.
+    // Not explanatory text — the difference between "this utterance" and "this
+    // speaker" is what stops a click meant for one row moving forty of them.
+    if (item.heading) {
+      const heading = document.createElement('p')
+      heading.className = 'menu__heading'
+      heading.textContent = item.heading
+      menu.append(heading)
+      continue
+    }
+
     const button = document.createElement('button')
     button.type = 'button'
     button.className = 'menu__item'
@@ -55,8 +70,8 @@ export function openMenu(x, y, items) {
       item.onSelect?.()
     })
     menu.append(button)
-    return button
-  })
+    buttons.push(button)
+  }
 
   // Placed off-screen first so it can be measured, then nudged back inside.
   menu.style.left = '0px'
