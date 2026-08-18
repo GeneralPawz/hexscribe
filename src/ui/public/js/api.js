@@ -118,6 +118,52 @@ export async function detachAudio(id, path) {
   return postJson('/v1/runs/audio/detach', { id, ...(path ? { path } : {}) })
 }
 
+// --- what a person added by hand ---------------------------------------
+//
+// Every one of these answers with the whole collection it changed, so the page
+// re-renders from what the server now holds rather than from what it hoped the
+// server would do. They are small -- a heavily marked-up hour is a few kilobytes
+// -- and being right matters more here than one saved round trip: these are the
+// only things in the database somebody typed.
+
+export async function getAnnotations(runId) {
+  return (await unwrap(await fetch(`/v1/annotations?run=${encodeURIComponent(runId)}`))).json()
+}
+
+export async function saveSection(runId, start, title) {
+  return postJson('/v1/sections', { runId, start, title })
+}
+
+export async function deleteSection(runId, start) {
+  return postJson('/v1/sections/delete', { runId, start })
+}
+
+/** An empty body clears the comment; that is how one is removed. */
+export async function saveNote(runId, start, body) {
+  return postJson('/v1/notes', { runId, start, body })
+}
+
+/** Carry annotations across when an edit joined two utterances. */
+export async function moveAnnotations(runId, moves) {
+  return postJson('/v1/annotations/move', { runId, moves })
+}
+
+export async function getTags() {
+  return (await unwrap(await fetch('/v1/tags'))).json()
+}
+
+export async function tagUtterance(runId, start, tag, on = true) {
+  return postJson('/v1/tags', { runId, start, tag, on })
+}
+
+export async function renameTag(from, to) {
+  return postJson('/v1/tags/rename', { from, to })
+}
+
+export async function deleteTag(name) {
+  return postJson('/v1/tags/delete', { name })
+}
+
 export async function getSettings() {
   return (await unwrap(await fetch('/v1/settings'))).json()
 }

@@ -1461,3 +1461,340 @@ body {
   font-size: 0.7rem;
   padding: 0.1rem 0.35rem;
 }
+
+
+/* --- sections, and the shape of a recording --------------------------- */
+
+/* The heading lives inside the row it starts at, not between rows: every
+   jump-to-row helper indexes the list by utterance position, and an extra
+   element per section would put all of them one out. */
+.segments li.has-section {
+  flex-wrap: wrap;
+  padding-top: 0;
+}
+
+.section {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0.35rem 0 0.45rem;
+  padding: 0.3rem 0.5rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  cursor: default;
+}
+
+.section__title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.section__time {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.section__input {
+  flex: 1;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.section__input:focus {
+  outline: none;
+}
+
+/* A comment or a tag is invisible until the panel is open, which makes marking
+   up an hour feel like it did nothing. Small, in the margin, and that is all. */
+.mark {
+  margin-left: auto;
+  align-self: start;
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+/* The timeline: sections drawn to scale under the player, so "79 minutes" turns
+   into "the pricing question is two thirds of the way in". */
+.timeline {
+  position: relative;
+  height: 22px;
+  margin: -0.4rem 0 0.75rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--line) 60%, transparent);
+  overflow: hidden;
+}
+
+.timeline__band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  padding: 0 0.4rem;
+  border: 0;
+  border-left: 1px solid var(--bg);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.7rem;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.timeline__band[data-colour="1"] { background: color-mix(in srgb, #6ba368 26%, transparent); }
+.timeline__band[data-colour="2"] { background: color-mix(in srgb, #c98f4b 26%, transparent); }
+.timeline__band[data-colour="3"] { background: color-mix(in srgb, #8a7fd0 26%, transparent); }
+.timeline__band[data-colour="4"] { background: color-mix(in srgb, #4fa3a5 26%, transparent); }
+.timeline__band[data-colour="5"] { background: color-mix(in srgb, #c2687f 26%, transparent); }
+
+.timeline__band:hover,
+.timeline__band.is-playing {
+  filter: brightness(1.35);
+}
+
+.timeline__label {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  display: block;
+}
+
+.timeline__head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--ink);
+  pointer-events: none;
+}
+
+/* --- the utterance panel ---------------------------------------------- */
+
+.aside__quote {
+  margin: 0 0 0.75rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--line);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.aside__editor {
+  width: 100%;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.88rem;
+  resize: vertical;
+}
+
+.aside__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0.6rem;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.tag--removable::after {
+  content: "×";
+  color: var(--muted);
+}
+
+.tag--removable:hover {
+  border-color: var(--err);
+}
+
+.tag--removable:hover::after {
+  color: var(--err);
+}
+
+.tag.is-active {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  border-color: var(--accent);
+}
+
+.tag__count {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- the drawer -------------------------------------------------------- */
+
+.drawer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  max-height: 50vh;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 -8px 24px rgb(0 0 0 / 0.18);
+}
+
+.drawer__handle {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0.9rem;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.drawer__handle:hover {
+  color: var(--ink);
+}
+
+.drawer__grip {
+  width: 28px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.drawer__tabs {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.drawer__tab {
+  padding: 0.4rem 0.6rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.drawer__tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.drawer__close {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.drawer__body {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Pick on the left, read on the right: the whole gesture is "this one, show me
+   its lines", and going back to the list between each one would be worse. */
+.drawer__split {
+  display: grid;
+  grid-template-columns: minmax(180px, 22rem) 1fr;
+  gap: 1rem;
+  height: 100%;
+  padding: 0.7rem 0.9rem 1rem;
+  overflow: hidden;
+}
+
+.drawer__pane {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.drawer__pane--list {
+  border-right: 1px solid var(--line);
+  padding-right: 0.9rem;
+}
+
+.drawer__group {
+  margin: 0.5rem 0 0.3rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.drawer__group:first-child {
+  margin-top: 0;
+}
+
+.drawer__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.taglist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.taglist__input {
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.utterances__meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+  margin-left: 0.4rem;
+}
+
+.speakers__row.is-active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 6px;
+}
+
+/* The page gives up the bottom half rather than being covered by it, so the
+   line you were reading is still somewhere you can scroll to. */
+body.has-drawer main {
+  padding-bottom: 50vh;
+}

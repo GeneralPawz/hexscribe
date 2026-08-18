@@ -17,6 +17,17 @@ import { clock, humanSize } from '../src/ui/public/js/dom.js'
 import { damageNote } from '../src/ui/public/js/transcript.js'
 import { activeIndex } from '../src/ui/public/js/player.js'
 import { estimateSeconds, progressAt, readRtf, recordRtf } from '../src/ui/public/js/progress.js'
+import {
+  at as anchor,
+  noteAt,
+  rowOf,
+  rowsWithTag,
+  spanAt,
+  spans,
+  taggedRows,
+  tagsAt,
+  tagsInRun,
+} from '../src/ui/public/js/annotations.js'
 
 /**
  * Schemastery fills a plugin's remaining config at load time, but the caller's
@@ -310,4 +321,90 @@ test('the page formats clock times and sizes the way a reader expects', () => {
   assert.equal(humanSize(512), '512 B')
   assert.equal(humanSize(2048), '2.0 kB')
   assert.equal(humanSize(15 * 1024 * 1024), '15 MB')
+})
+
+// --- sections, comments and tags --------------------------------------
+//
+// Everything here is anchored to *when* a line was said rather than to which
+// row it is, because merging two utterances renumbers every one after them. An
+// annotation that slid onto a neighbouring sentence would still look right,
+// which is what makes it worth pinning.
+
+const LINES = [
+  { start: 0, end: 10, text: 'a', speaker: 'S0' },
+  { start: 10, end: 20, text: 'b', speaker: 'S1' },
+  { start: 20.005, end: 30, text: 'c', speaker: 'S0' },
+]
+
+test('a section runs until the next one starts', () => {
+  const sections = [
+    { start: 600, title: 'The actual question' },
+    { start: 0, title: 'Introductions' },
+  ]
+  assert.deepEqual(spans(sections, 1800), [
+    { start: 0, end: 600, title: 'Introductions' },
+    { start: 600, end: 1800, title: 'The actual question' },
+  ], 'sorted, and covering the recording without gaps or overlaps')
+
+  // Nothing before the first section belongs to one: marking up the middle of a
+  // recording must not silently claim the beginning of it.
+  const late = [{ start: 300, title: 'Late' }]
+  assert.equal(spanAt(late, 900, 100), undefined)
+  assert.equal(spanAt(late, 900, 300)?.title, 'Late', 'the first instant is inside')
+  assert.equal(spanAt(late, 900, 899)?.title, 'Late')
+
+  // A section past the end of a duration nobody measured still has a length.
+  assert.deepEqual(spans([{ start: 50, title: 'x' }], 0), [{ start: 50, end: 50, title: 'x' }])
+})
+
+test('an annotation finds its line by time, at millisecond precision', () => {
+  assert.equal(anchor(20.0049), 20.005)
+  assert.equal(rowOf(LINES, 20.005), 2, 'the anchor the store wrote')
+  assert.equal(rowOf(LINES, 20.00499), 2, 'and the same instant read back a hair differently')
+  assert.equal(rowOf(LINES, 21), -1, 'but not the middle of a line, which is a different thing')
+})
+
+test('comments and tags belong to a line, not to a position', () => {
+  const notes = [{ start: 10, body: 'she hesitated' }]
+  const tags = [
+    { start: 10, tag: 'pricing' },
+    { start: 10, tag: 'follow up' },
+    { start: 0, tag: 'pricing' },
+  ]
+
+  assert.equal(noteAt(notes, 10), 'she hesitated')
+  assert.equal(noteAt(notes, 0), '', 'and a line without one has none, not undefined')
+  assert.deepEqual(tagsAt(tags, 10), ['follow up', 'pricing'], 'alphabetical, so the chips do not shuffle')
+  assert.deepEqual(tagsAt(tags, 20.005), [])
+
+  // The merge case: `b` absorbs `c`, so the third line is gone and the second
+  // now runs 10--30. The comment is still on the line that starts at 10.
+  const merged = [LINES[0], { start: 10, end: 30, text: 'b c', speaker: 'S1' }]
+  assert.equal(noteAt(notes, merged[1].start), 'she hesitated')
+  assert.equal(rowOf(merged, 10), 1)
+})
+
+test('a tag knows which lines carry it, and this run knows which tags it uses', () => {
+  const tags = [
+    { start: 0, tag: 'pricing' },
+    { start: 20.005, tag: 'pricing' },
+    { start: 10, tag: 'off topic' },
+  ]
+  assert.deepEqual(rowsWithTag(LINES, tags, 'pricing'), [0, 2])
+  assert.deepEqual(rowsWithTag(LINES, tags, 'nothing'), [])
+  assert.deepEqual(tagsInRun(tags), [
+    { name: 'pricing', uses: 2 },
+    { name: 'off topic', uses: 1 },
+  ], 'most used first: what this recording is actually about')
+})
+
+test('the transcript marks which lines have been written on', () => {
+  const marks = taggedRows(LINES, {
+    sections: [],
+    notes: [{ start: 0, body: 'x' }],
+    tags: [{ start: 20.005, tag: 'pricing' }],
+  })
+  assert.deepEqual([...marks.keys()], [0, 2])
+  assert.deepEqual(marks.get(0), { tagged: false, noted: true })
+  assert.deepEqual(marks.get(2), { tagged: true, noted: false })
 })

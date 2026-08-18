@@ -78,7 +78,7 @@ async function harness() {
   })
   await ctx.plugin(storePlugin, { path: join(directory, 'history.db') })
   await ctx.plugin(jobsPlugin, { retainMinutes: 60, maxJobs: 50 })
-  await ctx.plugin(historyPlugin, {})
+  await ctx.plugin(historyPlugin)
   return {
     ctx,
     script,

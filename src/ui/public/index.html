@@ -123,6 +123,12 @@
 
         <audio id="audio" class="player" controls preload="metadata" hidden></audio>
 
+        <!-- The shape of the recording: one band per section, drawn to scale,
+             with the playhead on it. Empty until somebody names a stretch, and
+             hidden while it is, because a bar with nothing on it says nothing
+             an hour of flat grey did not already say. -->
+        <div id="timeline" class="timeline" aria-label="Sections" hidden></div>
+
         <!-- Only present while rows are selected: it belongs to the selection,
              not to the page. -->
         <div id="toolbar" class="toolbar" hidden>
@@ -139,6 +145,20 @@
     <!-- One panel, many contents: a speaker's identity, the download options,
          whatever comes next. Hidden until something asks for it. -->
     <aside id="aside" class="aside" aria-label="Details" hidden></aside>
+
+    <!-- The drawer along the bottom: where in this recording is everything
+         about X. Collapsed to a handle until it is asked for, because the
+         answer to that question is a list and a list needs width, not a
+         column. -->
+    <section id="drawer" class="drawer" aria-label="Find in this transcript">
+      <button id="drawer-handle" class="drawer__handle" type="button"
+              aria-expanded="false" aria-controls="drawer-body">
+        <span class="drawer__grip" aria-hidden="true"></span>
+        <span id="drawer-label" class="drawer__label">Tags and speakers</span>
+      </button>
+      <div id="drawer-tabs" class="drawer__tabs" role="tablist" hidden></div>
+      <div id="drawer-body" class="drawer__body" hidden></div>
+    </section>
 
     <!-- A real <dialog>: the browser already traps focus, closes on Escape and
          renders a backdrop, and reimplementing that is a lot of code to arrive

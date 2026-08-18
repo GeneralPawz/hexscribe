@@ -1,6 +1,7 @@
 /** Rendering a transcript into the page, and getting it back out again. */
 
 import { $, clock } from './dom.js'
+import { at } from './annotations.js'
 
 /**
  * Colour index for a speaker label, stable within one transcript.
@@ -73,12 +74,90 @@ function renderText(item, segment, position, editing, onEdit) {
   return editor
 }
 
+/**
+ * A section heading, inside the row it starts at.
+ *
+ * Inside rather than between: `markActive`, the jump-to-row helpers and the
+ * selection all index `list.children` by utterance position, and an extra `li`
+ * for every heading would put each of them one row out — silently, and only in
+ * transcripts that had been marked up.
+ */
+function renderSection(item, { section, drafting, start, onCommit, onMenu }) {
+  const header = document.createElement('header')
+  header.className = 'section'
+
+  if (drafting) {
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.className = 'section__input'
+    input.value = section?.title ?? ''
+    input.placeholder = 'Name this section'
+    input.setAttribute('aria-label', 'Section name')
+
+    let done = false
+    // The same bargain as every other editor on this page: Enter commits,
+    // Escape puts it back, clicking away keeps what was typed. An empty name
+    // is a cancelled section rather than a section called nothing.
+    const finish = (value) => {
+      if (done) return
+      done = true
+      onCommit(start, value === null ? null : value.trim())
+    }
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        finish(input.value)
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        finish(null)
+      }
+    })
+    input.addEventListener('blur', () => finish(input.value))
+    input.addEventListener('click', (event) => event.stopPropagation())
+    header.append(input)
+    queueMicrotask(() => {
+      input.focus()
+      input.select()
+    })
+    item.append(header)
+    return
+  }
+
+  const title = document.createElement('span')
+  title.className = 'section__title'
+  title.textContent = section.title
+
+  const time = document.createElement('span')
+  time.className = 'section__time'
+  time.textContent = clock(section.start)
+
+  header.append(title, time)
+  header.addEventListener('dblclick', (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+    onMenu?.(section, event, 'rename')
+  })
+  header.addEventListener('contextmenu', (event) => {
+    if (event.shiftKey) return
+    event.preventDefault()
+    event.stopPropagation()
+    onMenu?.(section, event)
+  })
+  item.append(header)
+}
+
 export function renderSegments(list, transcript, onSeek, actions = {}) {
   const colours = speakerColours(transcript)
   const {
     onContext, onSelect, onEdit, onBeginEdit, onSpeaker, onSpeakerMenu,
+    onOpen, onSectionCommit, onSectionMenu,
+    sections = [], marks = new Map(), draftSection = null,
     selected = new Set(), editing = null,
   } = actions
+  // Anchored by time, so a section stays on the sentence it was put on even
+  // after the rows above it are merged and renumbered.
+  const sectionAt = new Map(sections.map((section) => [at(section.start), section]))
   list.replaceChildren(
     // Keyed by array position, never by a field on the segment: the server sends
     // OpenAI's `verbose_json`, whose segments carry `id`, while the editing
@@ -86,6 +165,20 @@ export function renderSegments(list, transcript, onSeek, actions = {}) {
     // button silently vanish (`undefined < length - 1` is false).
     ...transcript.segments.map((segment, position) => {
       const item = document.createElement('li')
+      const anchor = at(segment.start)
+      const section = sectionAt.get(anchor)
+      const drafting = draftSection !== null && at(draftSection) === anchor
+      if (section || drafting) {
+        item.classList.add('has-section')
+        renderSection(item, {
+          section,
+          drafting,
+          start: segment.start,
+          onCommit: onSectionCommit,
+          onMenu: onSectionMenu,
+        })
+      }
+
       const time = document.createElement('time')
       time.dateTime = `PT${segment.start}S`
       time.textContent = clock(segment.start)
@@ -154,13 +247,39 @@ export function renderSegments(list, transcript, onSeek, actions = {}) {
 
       if (selected.has(position)) item.classList.add('is-selected')
 
-      if (onSelect) {
-        // Ctrl/Cmd+click builds a selection; a plain click is left alone so the
-        // text stays selectable and the timestamps keep working.
+      // A comment or a tag on a line is invisible until you open it, which
+      // makes marking up an hour feel like it did nothing. These are the only
+      // marks the transcript carries, and they are small on purpose.
+      const mark = marks.get(position)
+      if (mark) {
+        const badge = document.createElement('span')
+        badge.className = 'mark'
+        badge.textContent = [mark.noted ? '✎' : '', mark.tagged ? '#' : ''].join('')
+        badge.title = [mark.noted ? 'has a comment' : '', mark.tagged ? 'tagged' : '']
+          .filter(Boolean)
+          .join(' \u00b7 ')
+        item.append(badge)
+        item.classList.add('is-marked')
+      }
+
+      if (onSelect || onOpen) {
         item.addEventListener('click', (event) => {
-          if (!event.ctrlKey && !event.metaKey) return
-          event.preventDefault()
-          onSelect(position, event)
+          // Ctrl/Cmd+click builds a selection.
+          if (event.ctrlKey || event.metaKey) {
+            if (!onSelect) return
+            event.preventDefault()
+            onSelect(position, event)
+            return
+          }
+          if (!onOpen) return
+          // A plain click opens the utterance -- but not when it was really a
+          // click on something with its own job, and not when it finished a
+          // drag across the text, because selecting a quotation to copy is a
+          // more common thing to do than annotating, and losing it would be a
+          // worse thing to happen.
+          if (event.target.closest('button, input, textarea, a, .speaker, .section')) return
+          if (String(window.getSelection?.() ?? '').length) return
+          onOpen(position)
         })
       }
 

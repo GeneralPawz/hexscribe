@@ -612,8 +612,12 @@ const speakers = await evaluate(`(async () => {
   await settle()
   menuItem('All speakers')?.click()
   await settle()
-  const tabs = [...document.querySelectorAll('.aside__tab')].map((b) => b.textContent)
-  const listed = document.querySelectorAll('.speakers__row').length
+  await settle()
+  // In the drawer now, not the aside: deciding whether two labels are one
+  // person means hearing both, and a column beside the transcript was the
+  // wrong shape for a list and its lines.
+  const tabs = [...document.querySelectorAll('.drawer__tab')].map((b) => b.textContent)
+  const listed = document.querySelectorAll('.drawer__pane--list .speakers__row').length
 
   // Merge the two of them.
   for (const tick of document.querySelectorAll('.speakers__tick')) {
@@ -621,19 +625,20 @@ const speakers = await evaluate(`(async () => {
     tick.dispatchEvent(new Event('change'))
   }
   await settle()
-  const mergeLabel = [...document.querySelectorAll('#aside button')].find((b) => b.textContent.startsWith('Merge'))
+  const mergeLabel = [...document.querySelectorAll('#drawer button')].find((b) => b.textContent.startsWith('Merge'))
   const mergeText = mergeLabel?.textContent ?? ''
   mergeLabel?.click()
   await settle()
+  await settle()
 
   const after = new Set([...document.querySelectorAll('#segments li .speaker')].map((c) => c.textContent))
-  const listedAfter = document.querySelectorAll('.speakers__row').length
+  const listedAfter = document.querySelectorAll('.drawer__pane--list .speakers__row').length
 
-  // And the utterances tab, with a row that jumps.
-  document.querySelector('.speakers__meta')?.click()
+  // And the other pane, with a row that jumps.
+  document.querySelector('.drawer__pane--list .speakers__meta')?.click()
   await settle()
-  const utterances = document.querySelectorAll('.utterances__row').length
-  document.querySelector('.utterances__row')?.click()
+  const utterances = document.querySelectorAll('.drawer__pane--detail .utterances__row').length
+  document.querySelector('.drawer__pane--detail .utterances__row')?.click()
   await settle()
   const jumped = document.querySelectorAll('#segments li.is-jumped').length
 
@@ -650,12 +655,12 @@ check('one misassigned line can be moved on its own',
   `${speakers.movedOne?.changed} row changed, and it now matches the one it moved to`)
 check('right-clicking a chip asks about the person', /Show utterances/.test(speakers.chipMenu.join('|')),
   speakers.chipMenu.join(' · '))
-check('the speakers panel has both tabs', speakers.tabs.length === 2, speakers.tabs.join(' | '))
+check('the drawer has a tab for tags and one for speakers', speakers.tabs.length === 2, speakers.tabs.join(' | '))
 check('listing every speaker', speakers.listed === 2, `${speakers.listed} rows`)
 check('and offering to merge the ticked ones', /^Merge 2 into/.test(speakers.mergeText), speakers.mergeText)
 check('merging leaves one speaker across the transcript', speakers.after === 1, `${speakers.after} distinct chips`)
 check('and one row in the list', speakers.listedAfter === 1)
-check('the utterances tab lists what they said', speakers.utterances === 2, `${speakers.utterances} utterances`)
+check('the other pane lists what they said', speakers.utterances === 2, `${speakers.utterances} utterances`)
 check('and clicking one jumps to it', speakers.jumped === 1)
 
 // "It stays green until something new is dropped" is a claim about a timer that

@@ -106,6 +106,10 @@ export function settingsModal({ models, onSaved }) {
             stat('Stored recordings', `${stats.audioClips} · ${humanSize(stats.audioBytes)}`),
             stat('Log entries', String(stats.logs)),
             stat('Named voices', String(stats.voices ?? 0)),
+            // The half nobody can regenerate: a transcript is four minutes of
+            // NPU away, and an hour of reading and marking up is not.
+            stat('Sections, comments and tags', String(stats.annotations ?? 0)),
+            stat('Tag vocabulary', String(stats.tags ?? 0)),
             stat('Database size', humanSize(stats.fileBytes))),
         )
 
@@ -164,7 +168,7 @@ export function settingsModal({ models, onSaved }) {
         danger.querySelector('div').className = 'modal__note'
         danger.querySelector('div').textContent =
           'Deleting audio keeps every transcript. Deleting the database keeps nothing — ' +
-          'including the named voices, which live in it too.'
+          'including the named voices and everything written by hand, which live in it too.'
         root.append(danger)
 
         // --- save ---

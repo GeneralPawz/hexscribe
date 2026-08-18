@@ -122,22 +122,43 @@ const growth = samples.filter((count, index) => index > 0 && count > samples[ind
 const peakWhileRunning = Math.max(0, ...samples)
 check('utterances render before the run is over', peakWhileRunning > 0, `${peakWhileRunning} rows while running`)
 check('and keep arriving as it goes', growth >= 3, `${growth} increases across ${samples.length} samples`)
+// One job on the NPU. Two hour-long runs at once push this past four minutes,
+// which is contention rather than a regression -- but the threshold stays where
+// it is, because a check that passes under any conditions checks nothing.
 check('the first ones show up soon after the run begins', firstRowsAt !== null && firstRowsAt < 90_000,
   `${firstRowsAt === null ? 'never' : (firstRowsAt / 1000).toFixed(1) + 's'} after the job started` +
     ` (the upload itself took ${uploadSeconds.toFixed(0)}s)`)
 
-const final = await evaluate(`({
-  rows: document.querySelectorAll('#segments li').length,
-  state: document.querySelector('#drop').dataset.state,
-  editable: !document.querySelector('#undo').disabled,
-  hint: document.querySelector('#drop-hint').textContent,
-})`)
+// "Editable" measured by asking a row to be edited, not by reading the Undo
+// button: Undo is enabled by an edit having happened, so a finished transcript
+// nobody has touched has it disabled and always did. The property that matters
+// is that the rows now carry the handlers the live view withheld -- the server
+// was still appending to that one, and an edit made against it would have been
+// overwritten by the next poll.
+const final = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 300))
+  const text = document.querySelector('#segments li .text')
+  text?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+  await settle()
+  const editor = document.querySelector('#segments .editor')
+  const editable = Boolean(editor)
+  // Leave it as it was found: Escape cancels without changing the text.
+  editor?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await settle()
+  return {
+    rows: document.querySelectorAll('#segments li').length,
+    state: document.querySelector('#drop').dataset.state,
+    editable,
+    hint: document.querySelector('#drop-hint').textContent,
+  }
+})()`)
 // Fewer rows at the end than at the peak is correct, not a loss: the merge pass
 // rejoins sentences the decoder split at a window boundary, and it can only run
 // once every window has been decoded.
 check('and the finished transcript replaces the live one', final.rows > 0,
   `${peakWhileRunning} while running → ${final.rows} after merging`)
-check('which is editable, as the live one was not', final.editable)
+check('which is editable, as the live one was not', final.editable,
+  'double-click opens the row editor')
 check('finishing in the done state', final.state === 'done', `${final.state} — ${final.hint}`)
 
 const errors = await evaluate('window.__errors')

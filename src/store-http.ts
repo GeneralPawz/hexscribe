@@ -80,6 +80,10 @@ export function apply(ctx: Context) {
       // The verbose shape, so the page renders a stored run with exactly the
       // code that renders a fresh one.
       ...(transcript ? { transcript: verboseBody(transcript, run.task as 'transcribe' | 'translate') } : {}),
+      // Sections, comments and tags travel with the run rather than in a second
+      // request: the page needs all of them the instant it renders, and a
+      // heavily marked-up hour is a few kilobytes against a transcript's sixty.
+      annotations: ctx.store.annotations(id),
       logs: ctx.store.recentLogs(50, id),
     })
   })
@@ -188,6 +192,98 @@ export function apply(ctx: Context) {
     )
     ctx.store.log('info', `resuming at ${resumeFrom.toFixed(1)}s with ${decoded.length} utterances kept`, run.id)
     return Response.json({ id: job.id, status: job.status, resumeFrom, kept: decoded.length })
+  })
+
+  // --- what somebody added by hand ------------------------------------
+  //
+  // Verbs on collections rather than REST-with-parameters, because the router
+  // matches exact paths: fitting the API to the router this project has is
+  // cheaper than growing the router to fit a convention.
+
+  ctx.serve.route('GET', '/v1/annotations', async (request) => {
+    const id = new URL(request.url).searchParams.get('run')
+    if (!id) throw badRequest('Which run? Pass `?run=`.')
+    return Response.json(ctx.store.annotations(id))
+  })
+
+  ctx.serve.route('POST', '/v1/sections', async (request) => {
+    const { runId, start, title } = await body(request)
+    if (typeof runId !== 'string') throw badRequest('A section needs a `runId`.')
+    if (typeof start !== 'number') throw badRequest('A section needs a `start`.')
+    if (typeof title !== 'string' || !title.trim()) throw badRequest('A section needs a title.')
+    if (!ctx.store.saveSection(runId, start, title)) throw notFound(`No run ${runId}.`)
+    return Response.json({ saved: true, sections: ctx.store.annotations(runId).sections })
+  })
+
+  ctx.serve.route('POST', '/v1/sections/delete', async (request) => {
+    const { runId, start } = await body(request)
+    if (typeof runId !== 'string' || typeof start !== 'number') {
+      throw badRequest('Deleting a section needs `runId` and `start`.')
+    }
+    return Response.json({
+      deleted: ctx.store.deleteSection(runId, start),
+      sections: ctx.store.annotations(runId).sections,
+    })
+  })
+
+  ctx.serve.route('POST', '/v1/notes', async (request) => {
+    const { runId, start, body: text } = await body(request)
+    if (typeof runId !== 'string') throw badRequest('A comment needs a `runId`.')
+    if (typeof start !== 'number') throw badRequest('A comment needs a `start`.')
+    if (typeof text !== 'string') throw badRequest('A comment needs a `body`; an empty one clears it.')
+    // An empty comment clears the row rather than storing whitespace, so the
+    // way to undo a comment is to delete its text -- which is what a person
+    // does anyway before wondering where the delete button is.
+    ctx.store.saveNote(runId, start, text)
+    return Response.json({ saved: true, notes: ctx.store.annotations(runId).notes })
+  })
+
+  /**
+   * Re-anchor annotations after an edit joined two utterances.
+   *
+   * The page works out what moved -- it is the only side that knows what the
+   * transcript looked like a moment ago -- and this applies it in one go, so a
+   * merge of twelve rows is one request rather than twelve.
+   */
+  ctx.serve.route('POST', '/v1/annotations/move', async (request) => {
+    const { runId, moves } = await body(request)
+    if (typeof runId !== 'string') throw badRequest('Moving annotations needs a `runId`.')
+    if (!Array.isArray(moves)) throw badRequest('Moving annotations needs `moves`.')
+    let moved = 0
+    for (const move of moves as Array<{ from?: unknown; to?: unknown }>) {
+      if (typeof move?.from !== 'number' || typeof move?.to !== 'number') continue
+      if (ctx.store.moveAnnotations(runId, move.from, move.to)) moved += 1
+    }
+    return Response.json({ moved, ...ctx.store.annotations(runId) })
+  })
+
+  ctx.serve.route('GET', '/v1/tags', async () => Response.json({ tags: ctx.store.listTags() }))
+
+  ctx.serve.route('POST', '/v1/tags', async (request) => {
+    const { runId, start, tag, on } = await body(request)
+    if (typeof runId !== 'string') throw badRequest('Tagging needs a `runId`.')
+    if (typeof start !== 'number') throw badRequest('Tagging needs a `start`.')
+    if (typeof tag !== 'string' || !tag.trim()) throw badRequest('Tagging needs a `tag`.')
+    const attached = ctx.store.tagUtterance(runId, start, tag, on !== false)
+    return Response.json({
+      attached,
+      tags: ctx.store.annotations(runId).tags,
+      library: ctx.store.listTags(),
+    })
+  })
+
+  ctx.serve.route('POST', '/v1/tags/rename', async (request) => {
+    const { from, to } = await body(request)
+    if (typeof from !== 'string' || typeof to !== 'string' || !to.trim()) {
+      throw badRequest('Renaming a tag needs `from` and `to`.')
+    }
+    return Response.json({ renamed: ctx.store.renameTag(from, to), tags: ctx.store.listTags() })
+  })
+
+  ctx.serve.route('POST', '/v1/tags/delete', async (request) => {
+    const { name } = await body(request)
+    if (typeof name !== 'string') throw badRequest('Deleting a tag needs a `name`.')
+    return Response.json({ deleted: ctx.store.deleteTag(name), tags: ctx.store.listTags() })
   })
 
   ctx.serve.route('POST', '/v1/runs/rename', async (request) => {

@@ -13,6 +13,16 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
+ * The time an annotation is anchored to, at millisecond precision.
+ *
+ * These are keys: a note is found again by matching the utterance's start
+ * against the one it was written on. Whisper's own numbers are hundredths, but
+ * an edit recomputes boundaries by character offset and can land anywhere, so
+ * both sides are rounded the same way rather than trusting float equality.
+ */
+export const at = (seconds: number): number => Math.round(seconds * 1000) / 1000
+
+/**
  * Where an application's data belongs on this operating system.
  *
  * Not next to the code: a checkout is a thing you delete and re-clone, and the
@@ -70,6 +80,41 @@ export interface Run {
   audio_bytes: number
 }
 
+/** A chapter: named, and starting where one of the utterances does. */
+export interface Section {
+  start: number
+  title: string
+}
+
+/** One comment, against one utterance. */
+export interface Note {
+  start: number
+  body: string
+  updated: number
+}
+
+/** A tag on one utterance of one run. */
+export interface UtteranceTag {
+  start: number
+  tag: string
+}
+
+/** A tag in the library, and how much it is used. */
+export interface TagUse {
+  name: string
+  /** How many utterances carry it, anywhere. */
+  uses: number
+  /** How many runs it appears in. */
+  runs: number
+}
+
+/** Everything somebody added to a run by hand, as the page needs it. */
+export interface Annotations {
+  sections: Section[]
+  notes: Note[]
+  tags: UtteranceTag[]
+}
+
 export interface StoreStats {
   runs: number
   transcripts: number
@@ -78,6 +123,10 @@ export interface StoreStats {
   logs: number
   /** Named voices. The most sensitive count here, so it is reported. */
   voices: number
+  /** Sections, comments and tag attachments: what was added by hand. */
+  annotations: number
+  /** Distinct tag names in the library. */
+  tags: number
   /** The database file itself, which is what a person means by "how big is it". */
   fileBytes: number
   path: string
@@ -205,6 +254,48 @@ const SCHEMA = `
     recordings INTEGER NOT NULL DEFAULT 1,
     updated    INTEGER NOT NULL DEFAULT 0
   );
+
+  -- Sections: chapters over a recording. One starts at an utterance and runs
+  -- until the next one starts, so there is nothing to overlap and no gap to
+  -- explain -- an hour of audio becomes a handful of named stretches, which is
+  -- the only way to see at a glance where the useful part of it is.
+  CREATE TABLE IF NOT EXISTS sections (
+    run_id  TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+    start   REAL NOT NULL,
+    title   TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    PRIMARY KEY (run_id, start)
+  );
+
+  -- A comment on one utterance.
+  --
+  -- Anchored to when it was said, not to which row it is. Merging two
+  -- utterances renumbers every one after them, and a note that moved to a
+  -- different sentence because something above it was tidied up would be worse
+  -- than no note at all.
+  CREATE TABLE IF NOT EXISTS notes (
+    run_id  TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+    start   REAL NOT NULL,
+    body    TEXT NOT NULL,
+    updated INTEGER NOT NULL,
+    PRIMARY KEY (run_id, start)
+  );
+
+  -- The tag vocabulary, shared across runs: the point of tagging the second
+  -- interview is to find it next to the first one, which cannot happen if every
+  -- recording invents its own words.
+  CREATE TABLE IF NOT EXISTS tags (
+    name    TEXT PRIMARY KEY,
+    created INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS utterance_tags (
+    run_id TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+    start  REAL NOT NULL,
+    tag    TEXT NOT NULL REFERENCES tags (name) ON DELETE CASCADE ON UPDATE CASCADE,
+    PRIMARY KEY (run_id, start, tag)
+  );
+  CREATE INDEX IF NOT EXISTS utterance_tags_tag ON utterance_tags (tag);
 
   CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -564,6 +655,193 @@ export class StoreService extends Service {
     return (runId ? statement.all(runId, limit) : statement.all(limit)) as unknown as LogEntry[]
   }
 
+  // --- sections, comments and tags --------------------------------------
+
+  /**
+   * Everything a person added to a run by hand.
+   *
+   * One call rather than three, because the page needs all of it at the moment
+   * it opens a run and none of it before -- and because these are small: a
+   * heavily marked-up hour is a few kilobytes against a transcript's sixty.
+   */
+  annotations(runId: string): Annotations {
+    // Spread into plain objects: `node:sqlite` hands back null-prototype rows,
+    // which serialise fine but surprise everything that compares them.
+    const rows = <T,>(sql: string): T[] =>
+      (this.db.prepare(sql).all(runId) as unknown as T[]).map((row) => ({ ...row }))
+    return {
+      sections: rows<Section>('SELECT start, title FROM sections WHERE run_id = ? ORDER BY start'),
+      notes: rows<Note>('SELECT start, body, updated FROM notes WHERE run_id = ? ORDER BY start'),
+      tags: rows<UtteranceTag>('SELECT start, tag FROM utterance_tags WHERE run_id = ? ORDER BY start'),
+    }
+  }
+
+  /** Name a stretch of a recording, or rename the one that starts here. */
+  saveSection(runId: string, start: number, title: string): boolean {
+    const trimmed = title.trim()
+    if (!trimmed || !this.hasRun(runId)) return false
+    this.db
+      .prepare(
+        `INSERT INTO sections (run_id, start, title, created) VALUES (?, ?, ?, ?)
+         ON CONFLICT(run_id, start) DO UPDATE SET title = excluded.title`,
+      )
+      .run(runId, at(start), trimmed, Date.now())
+    return true
+  }
+
+  deleteSection(runId: string, start: number): boolean {
+    return (
+      this.db.prepare('DELETE FROM sections WHERE run_id = ? AND start = ?').run(runId, at(start))
+        .changes > 0
+    )
+  }
+
+  /** Write a comment, or clear it: an empty comment is no comment. */
+  saveNote(runId: string, start: number, body: string): boolean {
+    const trimmed = body.trim()
+    if (!trimmed) return this.deleteNote(runId, start)
+    if (!this.hasRun(runId)) return false
+    this.db
+      .prepare(
+        `INSERT INTO notes (run_id, start, body, updated) VALUES (?, ?, ?, ?)
+         ON CONFLICT(run_id, start) DO UPDATE SET body = excluded.body, updated = excluded.updated`,
+      )
+      .run(runId, at(start), trimmed, Date.now())
+    return true
+  }
+
+  deleteNote(runId: string, start: number): boolean {
+    return (
+      this.db.prepare('DELETE FROM notes WHERE run_id = ? AND start = ?').run(runId, at(start))
+        .changes > 0
+    )
+  }
+
+  /**
+   * Carry annotations from one utterance to another.
+   *
+   * Merging two lines destroys one of their start times, and every annotation
+   * is anchored to a start time. Without this, commenting on a sentence and
+   * then joining it to the one above would leave the comment in the database
+   * pointing at a moment no row begins at any more: not lost, but invisible,
+   * which is worse than lost because nobody goes looking for it.
+   *
+   * Nothing is dropped on a collision. Two comments become one comment with
+   * both halves in it, because a merge is somebody saying these are one line,
+   * not somebody choosing which of their own notes to throw away.
+   */
+  moveAnnotations(runId: string, from: number, to: number): boolean {
+    const source = at(from)
+    const target = at(to)
+    if (source === target) return false
+
+    const moving = this.db
+      .prepare('SELECT body FROM notes WHERE run_id = ? AND start = ?')
+      .get(runId, source) as { body: string } | undefined
+    if (moving) {
+      const existing = this.db
+        .prepare('SELECT body FROM notes WHERE run_id = ? AND start = ?')
+        .get(runId, target) as { body: string } | undefined
+      this.saveNote(runId, target, existing ? `${existing.body}\n\n${moving.body}` : moving.body)
+      this.deleteNote(runId, source)
+    }
+
+    // `UPDATE OR IGNORE` moves what it can; the leftovers are the ones the
+    // target already carried, and a tag applied twice is applied once.
+    this.db
+      .prepare('UPDATE OR IGNORE utterance_tags SET start = ? WHERE run_id = ? AND start = ?')
+      .run(target, runId, source)
+    this.db
+      .prepare('DELETE FROM utterance_tags WHERE run_id = ? AND start = ?')
+      .run(runId, source)
+
+    // A section keeps whichever heading was already at the target: it is the
+    // one the reader can see, and two headings on one line is not a thing.
+    this.db
+      .prepare('UPDATE OR IGNORE sections SET start = ? WHERE run_id = ? AND start = ?')
+      .run(target, runId, source)
+    this.db.prepare('DELETE FROM sections WHERE run_id = ? AND start = ?').run(runId, source)
+    return true
+  }
+
+  /**
+   * The tag library, most used first, with the evidence for that ordering.
+   *
+   * Counts rather than names alone: choosing between two similar tags is a
+   * choice about which one everything else is already filed under.
+   */
+  listTags(): TagUse[] {
+    return this.db
+      .prepare(
+        `SELECT t.name AS name,
+                COUNT(u.tag) AS uses,
+                COUNT(DISTINCT u.run_id) AS runs
+         FROM tags t LEFT JOIN utterance_tags u ON u.tag = t.name
+         GROUP BY t.name
+         ORDER BY uses DESC, t.name`,
+      )
+      .all()
+      .map((row) => ({ ...(row as unknown as TagUse) }))
+  }
+
+  /**
+   * Put a tag on an utterance, or take it off.
+   *
+   * The name is added to the library on the way past, which is the only way one
+   * ever gets there: a vocabulary that had to be declared before it could be
+   * used would be a form to fill in before saying anything.
+   */
+  tagUtterance(runId: string, start: number, tag: string, on = true): boolean {
+    const trimmed = tag.trim()
+    if (!trimmed) return false
+    if (!on) {
+      return (
+        this.db
+          .prepare('DELETE FROM utterance_tags WHERE run_id = ? AND start = ? AND tag = ?')
+          .run(runId, at(start), trimmed).changes > 0
+      )
+    }
+    if (!this.hasRun(runId)) return false
+    this.db
+      .prepare('INSERT INTO tags (name, created) VALUES (?, ?) ON CONFLICT(name) DO NOTHING')
+      .run(trimmed, Date.now())
+    this.db
+      .prepare(
+        `INSERT INTO utterance_tags (run_id, start, tag) VALUES (?, ?, ?)
+         ON CONFLICT(run_id, start, tag) DO NOTHING`,
+      )
+      .run(runId, at(start), trimmed)
+    return true
+  }
+
+  /** Every utterance carrying a tag, across every run. */
+  taggedWith(tag: string): Array<{ run_id: string; start: number }> {
+    return this.db
+      .prepare('SELECT run_id, start FROM utterance_tags WHERE tag = ? ORDER BY run_id, start')
+      .all(tag)
+      .map((row) => ({ ...(row as unknown as { run_id: string; start: number }) }))
+  }
+
+  /** Forget a tag everywhere. The cascade takes it off every utterance. */
+  deleteTag(name: string): boolean {
+    return this.db.prepare('DELETE FROM tags WHERE name = ?').run(name).changes > 0
+  }
+
+  /** Rename it everywhere. `ON UPDATE CASCADE` carries the attachments along. */
+  renameTag(from: string, to: string): boolean {
+    const trimmed = to.trim()
+    if (!trimmed || trimmed === from) return false
+    // Merging into an existing tag is a rename too, and the one place it can
+    // happen -- so the attachments are moved first and the empty name dropped.
+    if (this.db.prepare('SELECT 1 AS one FROM tags WHERE name = ?').get(trimmed)) {
+      this.db
+        .prepare('UPDATE OR IGNORE utterance_tags SET tag = ? WHERE tag = ?')
+        .run(trimmed, from)
+      return this.deleteTag(from)
+    }
+    return this.db.prepare('UPDATE tags SET name = ? WHERE name = ?').run(trimmed, from).changes > 0
+  }
+
   // --- settings --------------------------------------------------------
 
   settings(): Settings {
@@ -636,6 +914,12 @@ export class StoreService extends Service {
       audioBytes: one('SELECT COALESCE(SUM(LENGTH(bytes)), 0) AS value FROM audio'),
       logs: one('SELECT COUNT(*) AS value FROM logs'),
       voices: one('SELECT COUNT(*) AS value FROM voices'),
+      annotations: one(
+        `SELECT (SELECT COUNT(*) FROM sections)
+              + (SELECT COUNT(*) FROM notes)
+              + (SELECT COUNT(*) FROM utterance_tags) AS value`,
+      ),
+      tags: one('SELECT COUNT(*) AS value FROM tags'),
       fileBytes,
       path: this.path,
     }
@@ -660,7 +944,10 @@ export class StoreService extends Service {
         // `meta` survives deliberately: it records migrations that already
         // happened, and re-running one would resurrect the very data this
         // button was pressed to destroy.
-        'DELETE FROM runs; DELETE FROM logs; DELETE FROM voices; DELETE FROM settings;',
+        // Sections, notes and utterance tags go with their runs; the tag
+        // vocabulary is nobody's run, so it has to be named here.
+        'DELETE FROM runs; DELETE FROM logs; DELETE FROM voices; DELETE FROM tags; ' +
+        'DELETE FROM settings;',
     )
     this.vacuum()
   }

@@ -3,6 +3,15 @@
 import {
   deleteRun,
   renameRun,
+  deleteSection,
+  deleteTag,
+  getAnnotations,
+  getTags,
+  moveAnnotations,
+  renameTag,
+  saveNote,
+  saveSection,
+  tagUtterance,
   detachAudio,
   getHealth,
   getVoices,
@@ -30,6 +39,15 @@ import {
   setTitleProgress,
 } from './notify.js'
 import { markActive, mountResult } from './transcript.js'
+import { renderTimeline, markTime } from './timeline.js'
+import {
+  NOTHING,
+  at,
+  noteAt,
+  rowOf,
+  taggedRows,
+  tagsAt,
+} from './annotations.js'
 import { mountShader } from './shader.js'
 import { activeIndex, createPlayer } from './player.js'
 import { estimateSeconds, progressAt, recordRtf } from './progress.js'
@@ -49,7 +67,10 @@ import {
 import { closeMenu, offsetFromPoint, openMenu } from './menu.js'
 import { closeAside, isAsideOpen, openAside } from './aside.js'
 import { speakerPanel } from './panel-speaker.js'
-import { speakersPanel } from './panel-speakers.js'
+import { utterancePanel } from './panel-utterance.js'
+import { closeDrawer, isDrawerOpen, mountDrawer, openDrawer, refreshDrawer } from './drawer.js'
+import { tagsTab } from './drawer-tags.js'
+import { speakersTab } from './drawer-speakers.js'
 import { downloadPanel } from './panel-download.js'
 
 const els = {
@@ -81,6 +102,7 @@ const els = {
   speakerSelected: $('#speaker-selected'),
   clearSelected: $('#clear-selected'),
   audio: $('#audio'),
+  timeline: $('#timeline'),
   segments: $('#segments'),
 }
 
@@ -167,6 +189,17 @@ let viewing = null
  * rather than asking whether the page came from the rail.
  */
 let runId = null
+
+/**
+ * Sections, comments and tags for the run on screen.
+ *
+ * Held beside the transcript rather than inside it, because they belong to
+ * different owners: the transcript is what the machine produced and can be
+ * produced again, and this is what a person made of it and cannot.
+ */
+let annotations = NOTHING
+/** The utterance start a new section is being named at, if any. */
+let draftSection = null
 let ticker = null
 let player = null
 let audioSeconds = 0
@@ -227,6 +260,8 @@ function selectFile(file) {
   setError(null)
   viewing = null
   runId = null
+  annotations = NOTHING
+  draftSection = null
   rail?.setActive(null)
   // A new file is what makes the last result stale, so this is where the
   // finished green goes back to the accent colour.
@@ -296,6 +331,21 @@ function render() {
     // a different question, and it lives in the row menu and the toolbar.
     onSpeaker: (position) => openSpeakerPanel(current.segments[position]?.speaker),
     onSpeakerMenu: (speaker, position, event) => openSpeakerChipMenu(speaker, position, event),
+    // Clicking the line itself asks about *this line*: what was said, what has
+    // been made of it. The chip asks about the person, the timestamp plays.
+    onOpen: (position) => openUtterancePanel(position),
+    sections: annotations.sections,
+    marks: taggedRows(current.segments, annotations),
+    draftSection,
+    onSectionCommit: commitSection,
+    onSectionMenu: (section, event, action) =>
+      action === 'rename' ? renameSection(section) : openSectionMenu(section, event),
+  })
+  renderTimeline(els.timeline, {
+    sections: annotations.sections,
+    duration: current?.duration ?? audioSeconds,
+    onJump: (seconds) => jumpToTime(seconds),
+    onMenu: (band, event) => openSectionMenu(band, event),
   })
   renderToolbar()
   els.undo.disabled = history.length === 0
@@ -310,6 +360,240 @@ function render() {
  * the transcript a document rather than a control panel.
  */
 /**
+ * The tag vocabulary, as the page last saw it.
+ *
+ * Fetched when a panel that offers it opens rather than kept fresh, because a
+ * tag list is small and stale-by-a-second is not a way to get this wrong.
+ */
+let tagLibrary = []
+/** What the drawer is looking at, so reopening it lands where it was. */
+let drawerFocus = { tag: null, speaker: null }
+/** The tag being typed over in the drawer, if any. */
+let renamingTag = null
+
+/**
+ * What the drawer shows, asked for on every paint.
+ *
+ * The drawer keeps no copy of the transcript or the annotations: it asks. That
+ * way tagging a line from the aside, merging two speakers, or editing a row all
+ * reach it without anything having to remember to tell it.
+ */
+function drawerContents() {
+  if (!current) return { tabs: [], label: 'Nothing open' }
+  const tabs = [
+    tagsTab({
+      transcript: current,
+      annotations,
+      library: tagLibrary,
+      focus: drawerFocus.tag,
+      renaming: renamingTag,
+      onFocus: (tag) => {
+        drawerFocus = { ...drawerFocus, tag }
+        refreshDrawer()
+      },
+      onJump: jumpTo,
+      onMenu: (tag, event) => openTagMenu(tag, event),
+      onRename: async (from, to) => {
+        renamingTag = null
+        if (!to || to === from) {
+          refreshDrawer()
+          return
+        }
+        try {
+          await renameTag(from, to)
+          if (drawerFocus.tag === from) drawerFocus = { ...drawerFocus, tag: to }
+          await reloadTags()
+        } catch (error) {
+          setError(error.message)
+          refreshDrawer()
+        }
+      },
+    }),
+    speakersTab({
+      transcript: current,
+      focus: drawerFocus.speaker,
+      onFocus: (speaker) => {
+        drawerFocus = { ...drawerFocus, speaker }
+        refreshDrawer()
+      },
+      onMerge: mergeSpeakersInto,
+      onOpenSpeaker: (speaker) => openSpeakerPanel(speaker),
+      onJump: jumpTo,
+    }),
+  ]
+  return { tabs, label: 'Tags and speakers' }
+}
+
+/** Rename or forget a tag, from the drawer. */
+function openTagMenu(tag, event) {
+  openMenu(event.clientX, event.clientY, [
+    { heading: tag },
+    { label: 'Show where it is', onSelect: () => {
+      drawerFocus = { ...drawerFocus, tag }
+      refreshDrawer()
+    } },
+    {
+      label: 'Rename everywhere',
+      onSelect: () => {
+        renamingTag = tag
+        refreshDrawer()
+      },
+    },
+    {
+      label: 'Forget it everywhere',
+      onSelect: async () => {
+        try {
+          await deleteTag(tag)
+          await reloadTags()
+        } catch (error) {
+          setError(error.message)
+        }
+      },
+    },
+  ])
+}
+
+/** Both halves: the vocabulary, and what this run carries. */
+async function reloadTags() {
+  tagLibrary = await getTags()
+    .then((answer) => answer.tags ?? [])
+    .catch(() => tagLibrary)
+  if (runId) {
+    annotations = await getAnnotations(runId).catch(() => annotations)
+  }
+  if (drawerFocus.tag && !tagLibrary.some((entry) => entry.name === drawerFocus.tag)) {
+    drawerFocus = { ...drawerFocus, tag: null }
+  }
+  render()
+  refreshDrawer()
+}
+
+/**
+ * What has been made of one line.
+ *
+ * Opened by clicking the line -- the chip asks about the person and the
+ * timestamp plays, so the row itself was the one part of an utterance with
+ * nothing to say. Now it has the two things that are about *this* line and
+ * nothing else.
+ */
+async function openUtterancePanel(position) {
+  const segment = current?.segments[position]
+  if (!segment) return
+
+  tagLibrary = await getTags()
+    .then((answer) => answer.tags ?? [])
+    .catch(() => tagLibrary)
+
+  openAside(
+    utterancePanel({
+      segment,
+      position,
+      comment: noteAt(annotations.notes, segment.start),
+      tags: tagsAt(annotations.tags, segment.start),
+      library: tagLibrary,
+      stored: Boolean(runId),
+      onPlay: () => player?.seek(segment.start),
+      onComment: async (bodyText) => {
+        const { notes } = await saveNote(runId, segment.start, bodyText)
+        annotations = { ...annotations, notes }
+        render()
+      },
+      onTag: async (tag, on) => {
+        const answer = await tagUtterance(runId, segment.start, tag, on)
+        annotations = { ...annotations, tags: answer.tags }
+        tagLibrary = answer.library ?? tagLibrary
+        render()
+        refreshDrawer()
+      },
+    }),
+  )
+}
+
+// --- sections ----------------------------------------------------------
+
+/**
+ * Name a stretch of the recording, starting at this utterance.
+ *
+ * The heading is written in the transcript rather than in a dialogue, because
+ * where a section starts is the only thing a dialogue could not show: the point
+ * of the gesture is that you are looking at the line it begins on.
+ */
+function beginSection(position) {
+  const segment = current.segments[position]
+  if (!segment) return
+  draftSection = segment.start
+  editing = null
+  render()
+}
+
+async function commitSection(start, title) {
+  draftSection = null
+  if (!title) {
+    // A cancelled draft leaves nothing behind; a cleared title on an existing
+    // section is a request to remove it, which the menu also offers.
+    if (annotations.sections.some((section) => at(section.start) === at(start)) && title === '') {
+      await removeSection(start)
+      return
+    }
+    render()
+    return
+  }
+  if (!runId) {
+    // A run that was never stored has nowhere to keep this. Saying so beats a
+    // heading that disappears on the next render with no explanation.
+    setError('This transcript is not in the database, so it cannot hold sections.')
+    render()
+    return
+  }
+  try {
+    const { sections } = await saveSection(runId, start, title)
+    annotations = { ...annotations, sections }
+  } catch (error) {
+    setError(error.message)
+  }
+  render()
+}
+
+function renameSection(section) {
+  draftSection = section.start
+  render()
+}
+
+async function removeSection(start) {
+  if (!runId) return
+  try {
+    const { sections } = await deleteSection(runId, start)
+    annotations = { ...annotations, sections }
+  } catch (error) {
+    setError(error.message)
+  }
+  render()
+}
+
+function openSectionMenu(section, event) {
+  openMenu(event.clientX, event.clientY, [
+    { heading: section.title },
+    { label: 'Go to it', onSelect: () => jumpToTime(section.start) },
+    { label: 'Play from here', disabled: !seekable, onSelect: () => player?.seek(section.start) },
+    { label: 'Rename', onSelect: () => renameSection(section) },
+    { label: 'Remove', onSelect: () => void removeSection(section.start) },
+  ])
+}
+
+/**
+ * Scroll the transcript to whatever is being said at this moment.
+ *
+ * Reading, not playing. A band on the timeline is a place in the document, and
+ * a strip that started audio every time it was touched would make finding your
+ * place a noisy thing to do -- the timestamps and the menu are there for that.
+ */
+function jumpToTime(seconds) {
+  const segments = current?.segments ?? []
+  const position = rowOf(segments, seconds)
+  scrollToRow(position >= 0 ? position : activeIndex(segments, seconds))
+}
+
+/**
  * Apply an edit and make it undoable.
  *
  * Every operation returns a new array, or the same one when it declined, which
@@ -321,6 +605,49 @@ function edit(segments) {
   history.push(current.segments)
   current = { ...current, segments, text: segments.map((segment) => segment.text).join(' ') }
   render()
+  void reanchor()
+  refreshDrawer()
+}
+
+/**
+ * Follow the annotations when an edit moves the line they were written on.
+ *
+ * Merging two utterances destroys one of their start times, and every
+ * annotation is anchored to one. So after any edit, anything anchored to a
+ * moment no row begins at any more is moved to the row that now contains that
+ * moment -- which for a merge is exactly the line the words ended up in.
+ *
+ * Worked out here rather than in the operations themselves because this is the
+ * only side that knows both shapes, and because it covers every edit, including
+ * the ones nobody has written yet.
+ */
+async function reanchor() {
+  if (!runId) return
+  const starts = new Set(current.segments.map((segment) => at(segment.start)))
+  const anchors = new Set([
+    ...annotations.notes.map((note) => at(note.start)),
+    ...annotations.tags.map((entry) => at(entry.start)),
+    ...annotations.sections.map((section) => at(section.start)),
+  ])
+
+  const moves = []
+  for (const anchor of anchors) {
+    if (starts.has(anchor)) continue
+    const host = current.segments.find(
+      (segment) => at(segment.start) <= anchor && anchor < at(segment.end),
+    )
+    if (host) moves.push({ from: anchor, to: at(host.start) })
+  }
+  if (!moves.length) return
+
+  try {
+    const { sections, notes, tags } = await moveAnnotations(runId, moves)
+    annotations = { sections, notes, tags }
+    render()
+    refreshDrawer()
+  } catch (error) {
+    setError(error.message)
+  }
 }
 
 /** Open the editor on a row. Double-click and the row menu both land here. */
@@ -391,31 +718,34 @@ function renameSpeaker(from, to) {
  */
 let examining = null
 
-/** The speakers panel, on whichever tab makes sense. */
-function openSpeakersPanel({ focus = examining, tab } = {}) {
+/**
+ * Every speaker, in the drawer.
+ *
+ * This used to be a two-tab panel in the right aside, which was the wrong shape
+ * for it: deciding whether `S7` and `S11` are the same person means listening
+ * to both, and doing that in a column narrow enough to sit beside a transcript
+ * meant tabbing between a list and its lines. The drawer shows them side by
+ * side. The aside keeps what it is good at -- one thing at a time.
+ */
+function openSpeakerBrowser({ focus = examining } = {}) {
   if (!current) return
   examining = focus ?? examining
-  const handle = openAside(
-    speakersPanel({
-      transcript: current,
-      focus: examining,
-      onMerge: (names, into) => {
-        const merged = mergeSpeakersInTranscript(current, names, into)
-        if (merged === current) return
-        history.push(current.segments)
-        current = merged
-        examining = into
-        render()
-        // Straight back to the list, which now has fewer rows in it: merging is
-        // usually done several times in a row.
-        openSpeakersPanel({ focus: into, tab: 'list' })
-      },
-      onJump: jumpTo,
-      onOpenSpeaker: openSpeakerPanel,
-      onFocus: (speaker) => openSpeakersPanel({ focus: speaker, tab: 'utterances' }),
-    }),
-  )
-  if (tab) handle?.show(tab)
+  drawerFocus = { ...drawerFocus, speaker: examining }
+  openDrawer('speakers')
+}
+
+/** Join several labels into one person, and blend their prints. */
+function mergeSpeakersInto(names, into) {
+  const merged = mergeSpeakersInTranscript(current, names, into)
+  if (merged === current) return
+  history.push(current.segments)
+  current = merged
+  examining = into
+  drawerFocus = { ...drawerFocus, speaker: into }
+  render()
+  // The list is one row shorter now, and merging six fragments is six of these
+  // in a row, so it stays open on what it was doing.
+  refreshDrawer()
 }
 
 /**
@@ -424,14 +754,17 @@ function openSpeakersPanel({ focus = examining, tab } = {}) {
  * Both, because the question the panel is helping to answer — is this the same
  * person? — is answered by ear, and the row is what tells you where you are.
  */
-function jumpTo(position) {
+function scrollToRow(position) {
   const row = els.segments.children[position]
-  if (row) {
-    row.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    for (const other of els.segments.querySelectorAll('.is-jumped')) other.classList.remove('is-jumped')
-    // Re-triggering the animation needs the class gone for a frame.
-    requestAnimationFrame(() => row.classList.add('is-jumped'))
-  }
+  if (!row) return
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  for (const other of els.segments.querySelectorAll('.is-jumped')) other.classList.remove('is-jumped')
+  // Re-triggering the animation needs the class gone for a frame.
+  requestAnimationFrame(() => row.classList.add('is-jumped'))
+}
+
+function jumpTo(position) {
+  scrollToRow(position)
   const segment = current?.segments[position]
   if (segment && seekable) player?.seek(segment.start)
 }
@@ -487,11 +820,11 @@ function openSpeakerChipMenu(speaker, position, event) {
     { heading: `${short(speaker)} · ${mine?.utterances ?? 0} utterances` },
     {
       label: 'Show utterances',
-      onSelect: () => openSpeakersPanel({ focus: speaker, tab: 'utterances' }),
+      onSelect: () => openSpeakerBrowser({ focus: speaker }),
     },
     {
       label: 'All speakers',
-      onSelect: () => openSpeakersPanel({ focus: speaker, tab: 'list' }),
+      onSelect: () => openSpeakerBrowser({ focus: speaker }),
     },
     {
       label: 'Name this speaker',
@@ -609,7 +942,7 @@ els.speakerSelected.addEventListener('click', () => {
   openSpeakerMenu(bounds.left, bounds.bottom + 4, [...selectedRows].sort((a, b) => a - b))
 })
 
-els.speakers.addEventListener('click', () => openSpeakersPanel({ tab: 'list' }))
+els.speakers.addEventListener('click', () => openSpeakerBrowser())
 
 els.clearSelected.addEventListener('click', () => {
   selectedRows.clear()
@@ -669,6 +1002,16 @@ function openRowMenu(position, event, textElement) {
       onSelect: () => openSpeakerMenu(event.clientX, event.clientY, speakerTargets(position)),
     },
     {
+      label: 'Comment and tags…',
+      onSelect: () => openUtterancePanel(position),
+    },
+    {
+      label: annotations.sections.some((section) => at(section.start) === at(segment.start))
+        ? 'Rename this section'
+        : 'Start a section here',
+      onSelect: () => beginSection(position),
+    },
+    {
       label: 'Merge up',
       disabled: position === 0,
       onSelect: () => edit(mergeAt(current.segments, position - 1)),
@@ -690,6 +1033,12 @@ document.addEventListener('keydown', (event) => {
   // branch for it here: by the time this runs, it is already gone.
   if (isAsideOpen()) {
     closeAside()
+    return
+  }
+  // Then the drawer. It is further from the thing being read than the aside is,
+  // so it goes second -- one press, one dismissal, innermost outwards.
+  if (isDrawerOpen()) {
+    closeDrawer()
     return
   }
   if (!selectedRows.size) return
@@ -752,6 +1101,8 @@ els.form.addEventListener('submit', async (event) => {
   els.submit.textContent = 'Transcribing…'
   viewing = null
   runId = null
+  annotations = NOTHING
+  draftSection = null
   rail?.setActive(null)
 
   const started = performance.now()
@@ -826,11 +1177,18 @@ function showTranscript(transcript, wall) {
   current = transcript
   history.length = 0
   editing = null
+  draftSection = null
   selectedRows.clear()
   closeMenu()
   lastWall = wall
   render()
-  player?.onTime((time) => markActive(els.segments, activeIndex(current.segments, time)))
+  // A run resumed from the rail may already have been marked up before it was
+  // interrupted, so this asks rather than assuming a fresh transcript is bare.
+  if (runId) void loadAnnotations(runId)
+  player?.onTime((time) => {
+    markActive(els.segments, activeIndex(current.segments, time))
+    markTime(els.timeline, time, current.duration ?? audioSeconds)
+  })
   player?.onUnplayable(() => {
     // The browser cannot decode what the worker could. Re-render without the
     // seek buttons rather than leave dead ones behind.
@@ -991,6 +1349,16 @@ async function reattach() {
 
 // --- history ------------------------------------------------------------
 
+async function loadAnnotations(id) {
+  try {
+    annotations = await getAnnotations(id)
+    render()
+  } catch {
+    // A server without a database has no annotations to give, and the
+    // transcript in front of the reader is not worth an error banner over it.
+  }
+}
+
 /** The voice library, as the page last saw it. Kept for `learnFromAssignment`. */
 async function refreshVoices() {
   knownVoices = await getVoices().catch(() => knownVoices)
@@ -1055,13 +1423,20 @@ async function openRun(id) {
     else els.audio.hidden = true
 
     current = run.transcript
+    // They arrive with the run, in the same response: the page needs all of
+    // them the moment it renders and none of them before.
+    annotations = run.annotations ?? NOTHING
+    draftSection = null
     history.length = 0
     editing = null
     selectedRows.clear()
     lastWall = run.wall_ms / 1000
     render()
     if (player) {
-      player.onTime((time) => markActive(els.segments, activeIndex(current.segments, time)))
+      player.onTime((time) => {
+        markActive(els.segments, activeIndex(current.segments, time))
+        markTime(els.timeline, time, current.duration ?? run.audio_seconds)
+      })
       player.onUnplayable(() => {
         seekable = false
         render()
@@ -1137,6 +1512,8 @@ function newTranscript() {
   closeModal()
   viewing = null
   runId = null
+  annotations = NOTHING
+  draftSection = null
   selected = null
   chosen = null
   current = null
@@ -1231,6 +1608,8 @@ async function init() {
         }),
       ),
   })
+
+  mountDrawer(drawerContents)
 
   canBackground = await hasJobs()
   canBrowse = await hasLocalFiles()

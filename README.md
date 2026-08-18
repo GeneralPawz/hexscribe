@@ -92,6 +92,12 @@ await client.audio.transcriptions.create({
 | `POST /v1/runs/resume` | continue an interrupted run from its last utterance |
 | `GET /v1/files?path=` | browse this machine for a recording (loopback only) |
 | `GET /v1/files/audio?path=` | stream one, with range requests |
+| `GET /v1/annotations?run=` | sections, comments and tags for a run |
+| `POST /v1/sections`, `/v1/sections/delete` | name a stretch of a recording |
+| `POST /v1/notes` | comment on one utterance; an empty body clears it |
+| `POST /v1/annotations/move` | carry annotations across when an edit joins two lines |
+| `GET,POST /v1/tags` | the vocabulary, and putting one on an utterance |
+| `POST /v1/tags/{rename,delete}` | rename a tag everywhere, or forget it |
 | `GET,POST /v1/settings` | global defaults and database stats |
 | `POST /v1/store/{clear-audio,reset}` | the danger zone |
 | `GET /v1/jobs` | background runs; `?id=` for one, with its transcript when done |
@@ -297,6 +303,86 @@ did nothing for the reported case: the two halves were 14.16 s and 15.28 s apart
 the next window starts where the seek put it, so a boundary *inside* one sentence
 routinely shows a second of "silence". The tolerance is 1.5 s because that is
 what the artefact measures, not because it sounded right.
+
+### Reading it back: sections, comments, tags
+
+Everything above is the machine's half. This is the other one, and it is the
+expensive half: a transcript is four minutes of NPU away from existing again,
+and an hour spent reading an interview and marking up where the useful part of
+it is cannot be made again at all.
+
+**Sections** are chapters. Right-click a line, *Start a section here*, and type
+a name into the transcript where the heading will be — the point of the gesture
+is that you are looking at the line it begins on, which is the one thing a
+dialogue box could not show you. A section runs until the next one starts, so a
+recording is covered without gaps or overlaps, and the strip under the player
+draws them to scale. That turns "this interview is 79 minutes" into "the pricing
+question is two thirds of the way in and lasts four minutes", which is the
+question you actually have. Clicking a band moves the *document*, not the
+playhead: the timestamps already play, and a bar that started audio every time
+it was touched would make finding your place a noisy thing to do.
+
+The strip is drawn beside the native player rather than on it. `<audio controls>`
+renders in the browser's own shadow tree and cannot be styled or overlaid
+reliably; a strip of its own is honest about being a separate thing, and it can
+carry a click the player has no meaning for.
+
+**Comments and tags** hang off one line each. Clicking a line opens it in the
+aside — the chip asks about the person and the timestamp plays, so the row
+itself was the one part of an utterance with nothing to say. The comment box
+saves when it loses focus, because reaching for a Save button after every
+thought is what stops people writing the thought down, and emptying it is how a
+comment is removed.
+
+A tag is added to the vocabulary by being used; there is no "create a tag" step,
+because a form to fill in before you can say anything is a good way to be sure
+nothing gets said. The field is a dropdown over the tags already in use, showing
+how much is filed under each — the failure it exists to prevent is tagging the
+second interview `price` when the first one said `pricing`, two tags that each
+find half the evidence and neither of which is wrong enough to notice. Renaming
+a tag onto an existing one merges them, which is the only way back from that.
+
+**The drawer** along the bottom answers a different shape of question: *where in
+this recording is everything about X*. It is collapsed to a handle until it is
+asked for, and opens at half the page with two panes — pick on the left, read on
+the right, because the whole gesture is "this one, show me its lines" and going
+back to a list between each one is worse.
+
+- **Tags** lists what this recording carries and, separately, the rest of the
+  vocabulary. Picking one lists the lines carrying it, each a click from being
+  played.
+- **Speakers** is the browse-and-merge view, which used to be a two-tab panel in
+  the right aside and was the wrong shape there: deciding whether `S7` and `S11`
+  are the same person means listening to both, and doing that in a column narrow
+  enough to sit beside a transcript meant tabbing between a list and its lines.
+
+**All of it is anchored to when a line was said, not to which row it is.** That
+is the only decision here worth arguing about. Merging two utterances renumbers
+every one after them, so a comment stored against row 12 would slide onto a
+different sentence the moment somebody tidied up the paragraph above it — and it
+would still look right, which is what makes it worth being careful about. Both
+sides round the anchor the same way (`at()`, milliseconds) rather than trusting
+float equality, because splitting an utterance recomputes the boundary from a
+character offset and can land anywhere.
+
+Time anchoring is not enough on its own, and the browser check is what said so.
+Merging a line *upwards* destroys its start: the words survive in the line
+above, and the moment the comment was anchored to is no longer the beginning of
+anything. The comment was still in the database and no longer on screen —
+invisible rather than lost, which is worse, because nobody goes looking for it.
+
+So every edit is followed by a reconciliation: anything anchored to a moment no
+row starts at any more is moved to the row that now *contains* that moment,
+which for a merge is exactly the line the words ended up in. It is done after
+the fact rather than inside each operation because this is the only place that
+knows both shapes, and because it covers edits nobody has written yet. Nothing
+is dropped on a collision — two comments become one comment with both halves in
+it, since a merge is somebody saying *these are one line*, not somebody choosing
+which of their own notes to throw away.
+
+Sections, comments and tag attachments belong to their run and are deleted with
+it. The vocabulary is not: the words outlive the recording, and they are what
+makes tagging the next one worth doing.
 
 ### The shell: a rail, a history, and settings
 
@@ -1116,6 +1202,7 @@ scripts/reattach-check.mjs  proves a job survives the page that started it
 scripts/shell-check.mjs     rail, history, settings, and the file picker
 scripts/stream-check.mjs    the transcript appearing as it is decoded
 scripts/learn-check.mjs     a correction reaching the stored voice print
+scripts/annotate-check.mjs  sections, comments and tags, and that they come back
 scripts/toast.ps1           the Windows progress toast, driven over stdin
 py/hexscribe_worker/  worker: audio.py, qnn.py, whisper_qnn.py, diarize.py,
                       diarize_utterances.py, worker.py
