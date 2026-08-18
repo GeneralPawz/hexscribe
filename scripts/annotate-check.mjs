@@ -263,6 +263,54 @@ const drawer = await evaluate(`(async () => {
   }
 })()`)
 
+// Where it sits, which is the half of a bottom sheet that goes wrong quietly:
+// it must stay clear of the rail, out from under the aside, and centred on
+// whatever width is left over.
+const placed = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 400))
+  const box = (sel) => {
+    const el = document.querySelector(sel)
+    const r = el.getBoundingClientRect()
+    return { left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width) }
+  }
+  const layer = (sel) => Number(getComputedStyle(document.querySelector(sel)).zIndex)
+
+  document.querySelector('#aside .aside__close')?.click()
+  await settle()
+  const alone = { drawer: box('#drawer'), rail: box('#rail'), handle: box('#drawer-handle') }
+
+  // Open the aside on a line and let the drawer give up the column.
+  ;[...document.querySelectorAll('#segments li')][1].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await settle()
+  await settle()
+  const beside = { drawer: box('#drawer'), aside: box('#aside'), handle: box('#drawer-handle') }
+
+  return {
+    alone,
+    beside,
+    layers: { drawer: layer('#drawer'), rail: layer('#rail'), aside: layer('#aside') },
+    viewport: window.innerWidth,
+  }
+})()`)
+
+const centred = (outer, inner) => Math.abs((inner.left + inner.right) / 2 - (outer.left + outer.right) / 2)
+check('the drawer starts where the rail ends',
+  placed.alone.drawer.left >= placed.alone.rail.right,
+  `rail ends at ${placed.alone.rail.right}, drawer starts at ${placed.alone.drawer.left}`)
+check('and stays under it, so the rail can slide out over the top',
+  placed.layers.drawer < placed.layers.rail,
+  `drawer ${placed.layers.drawer} < rail ${placed.layers.rail}`)
+check('the handle is centred on the drawer', centred(placed.alone.drawer, placed.alone.handle) <= 2,
+  `${centred(placed.alone.drawer, placed.alone.handle)}px off`)
+check('opening the aside takes the drawer out from under it',
+  placed.beside.drawer.right <= placed.beside.aside.left,
+  `drawer ends at ${placed.beside.drawer.right}, aside starts at ${placed.beside.aside.left}`)
+check('and the handle recentres on what is left',
+  centred(placed.beside.drawer, placed.beside.handle) <= 2 &&
+    placed.beside.handle.left < placed.alone.handle.left,
+  `${centred(placed.beside.drawer, placed.beside.handle)}px off, and moved ` +
+    `${placed.alone.handle.left - placed.beside.handle.left}px left`)
+
 check('the drawer opens on its handle', drawer.open)
 check('with a tab for each', drawer.tabs.join(' | '), drawer.tabs.join(' | '))
 check('tags are split into this recording and the rest',

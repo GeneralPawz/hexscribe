@@ -151,9 +151,28 @@
          answer to that question is a list and a list needs width, not a
          column. -->
     <section id="drawer" class="drawer" aria-label="Find in this transcript">
+      <!-- The pull tab: a line along the bottom that rises into a tab in the
+           middle, which is a brace turned on its side. The shape is the whole
+           message -- a flat strip says nothing, and this says there is
+           something under the edge of the page. -->
       <button id="drawer-handle" class="drawer__handle" type="button"
               aria-expanded="false" aria-controls="drawer-body">
-        <span class="drawer__grip" aria-hidden="true"></span>
+        <svg class="drawer__brace" viewBox="0 0 200 24" preserveAspectRatio="none"
+             aria-hidden="true" focusable="false">
+          <!-- Only the bump. The arms of the brace are the drawer's own border,
+               which already runs the width of the page: drawing them here as
+               well put two hairlines a pixel apart, and no amount of nudging
+               made a second line land exactly on the first at every zoom.
+               Two paths rather than one stroked shape, because a closed path is
+               stroked along the edge that closes it. -->
+          <path class="drawer__brace-fill"
+                d="M18 24 C40 24 38 4 62 4 H138 C162 4 160 24 182 24 Z" />
+          <path class="drawer__brace-line"
+                d="M18 24 C40 24 38 4 62 4 H138 C162 4 160 24 182 24" />
+        </svg>
+        <svg class="drawer__chevron" viewBox="0 0 16 10" aria-hidden="true" focusable="false">
+          <path d="M1.5 7.5 L8 2 L14.5 7.5" />
+        </svg>
         <span id="drawer-label" class="drawer__label">Tags and speakers</span>
       </button>
       <div id="drawer-tabs" class="drawer__tabs" role="tablist" hidden></div>

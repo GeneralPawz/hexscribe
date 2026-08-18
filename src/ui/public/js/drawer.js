@@ -98,7 +98,12 @@ export function closeDrawer() {
  * minute's answer is worse than one that is shut.
  */
 export function refreshDrawer() {
-  if (!open || !host) return
+  if (!host) return
+  // The handle is repainted even while the drawer is shut, because what it says
+  // is about the page and not about itself: opening a run has to reach the
+  // label, or it sits there claiming nothing is open over an open transcript.
+  paintHandle()
+  if (!open) return
   const { tabs } = provide()
   if (!tabs.length) {
     closeDrawer()

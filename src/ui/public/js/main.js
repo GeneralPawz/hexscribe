@@ -348,6 +348,7 @@ function render() {
     onMenu: (band, event) => openSectionMenu(band, event),
   })
   renderToolbar()
+  refreshDrawer()
   els.undo.disabled = history.length === 0
   show(els.edited, history.length > 0)
 }

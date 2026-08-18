@@ -581,7 +581,9 @@ button.speaker:focus-visible {
   position: fixed;
   top: 0;
   right: 0;
-  z-index: 20;
+  /* Above the drawer, below the rail: on a narrow screen the aside covers the
+     page rather than sharing it, and the drawer must not surface through it. */
+  z-index: 25;
   display: flex;
   flex-direction: column;
   width: min(23rem, 92vw);
@@ -1648,40 +1650,130 @@ body {
 
 .drawer {
   position: fixed;
-  left: 0;
+  /* Clear of the rail at rest, and *under* it: the rail slides out over the
+     page when the pointer crosses it, and a sheet at the bottom has no business
+     being in front of the thing that navigates the whole app. */
+  left: 3.25rem;
   right: 0;
   bottom: 0;
-  z-index: 30;
+  z-index: 20;
   display: flex;
   flex-direction: column;
-  max-height: 50vh;
   border-top: 1px solid var(--line);
   background: var(--panel);
+  transition: right 0.22s ease;
+}
+
+/* Half the page when it is open, whatever is in it: a sheet that changed height
+   as you moved between tabs would move the transcript under the pointer. */
+.drawer.is-open {
+  height: 50vh;
   box-shadow: 0 -8px 24px rgb(0 0 0 / 0.18);
 }
 
+/* Closed, the panel is nothing but the line and the tab standing on it, and the
+   page underneath stays clickable right up to the edge. */
+.drawer:not(.is-open) {
+  background: transparent;
+  pointer-events: none;
+}
+
+.drawer:not(.is-open) .drawer__handle {
+  pointer-events: auto;
+}
+
+/* The aside owns the right-hand column while it is open, so the drawer gives it
+   up rather than sliding underneath. Same breakpoint as the page's own
+   padding: below it the aside covers, and there is no width to share. */
+@media (min-width: 62rem) {
+  body.has-aside .drawer {
+    right: calc(1rem + min(23rem, 92vw));
+  }
+}
+
 .drawer__handle {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.35rem 0.9rem;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 15rem;
+  height: 24px;
+  padding: 0.2rem 0 0;
   border: 0;
   background: none;
   color: var(--muted);
   font: inherit;
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   cursor: pointer;
+}
+
+/* The tab itself: filled with the panel colour so it reads as the same sheet
+   coming up through the line, and stroked so the line is continuous across it.
+   Named for the shape rather than for the tab -- `.drawer__tab` is already the
+   tab *buttons* inside, and giving both the same name put `position: absolute;
+   inset: 0` on every one of them, stacking Tags and Speakers on one spot. */
+.drawer__brace {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Down onto the border rather than up against it: an overlap of a pixel is
+     invisible, a gap of one is a broken line. */
+  transform: translateY(1px);
+}
+
+.drawer__brace-fill {
+  fill: var(--panel);
+  stroke: none;
+}
+
+.drawer__brace-line {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1;
+  /* Without this the hairline is stretched with the shape and thickens on the
+     flat parts, which is exactly where it sits next to the real border. */
+  vector-effect: non-scaling-stroke;
+}
+
+.drawer__chevron,
+.drawer__label {
+  position: relative;
+  z-index: 1;
+}
+
+.drawer__chevron {
+  width: 12px;
+  height: 8px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.2s ease;
+}
+
+.drawer.is-open .drawer__chevron {
+  transform: rotate(180deg);
 }
 
 .drawer__handle:hover {
   color: var(--ink);
 }
 
-.drawer__grip {
-  width: 28px;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--line);
+.drawer__handle:hover .drawer__brace-fill {
+  fill: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawer__chevron {
+    transition: none;
+  }
 }
 
 .drawer__tabs {

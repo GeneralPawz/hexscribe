@@ -343,10 +343,27 @@ find half the evidence and neither of which is wrong enough to notice. Renaming
 a tag onto an existing one merges them, which is the only way back from that.
 
 **The drawer** along the bottom answers a different shape of question: *where in
-this recording is everything about X*. It is collapsed to a handle until it is
-asked for, and opens at half the page with two panes — pick on the left, read on
-the right, because the whole gesture is "this one, show me its lines" and going
-back to a list between each one is worse.
+this recording is everything about X*. It is collapsed until it is asked for,
+and opens at half the page with two panes — pick on the left, read on the right,
+because the whole gesture is "this one, show me its lines" and going back to a
+list between each one is worse.
+
+Shut, all that is left of it is the line along the bottom of the page rising
+into a tab in the middle — a brace turned on its side. The shape is the whole
+message: a flat strip says nothing, and this says there is something under the
+edge. It is drawn as an SVG rather than a bordered box because the shoulders
+curve *into* the line, which is what makes it read as one surface bulging
+rather than a box sitting on a shelf. Two paths, not one stroked shape: a closed
+path is stroked along the edge that closes it, which put a second hairline a
+pixel under the drawer's own border. The arms of the brace are that border, not
+part of the tab — drawing them twice meant two lines that no amount of nudging
+made land on each other at every zoom level.
+
+It stays out of the way of the other two surfaces rather than fighting them. It
+begins where the rail rests and sits *under* it, so the rail slides out over the
+top; when the aside opens, the drawer gives up that column instead of sliding
+beneath it, and the tab recentres on what is left. Those are three numbers a
+stylesheet can get wrong quietly, so `annotate-check.mjs` measures them.
 
 - **Tags** lists what this recording carries and, separately, the rest of the
   vocabulary. Picking one lists the lines carrying it, each a click from being
