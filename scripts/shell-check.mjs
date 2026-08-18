@@ -195,7 +195,11 @@ const settings = await evaluate(`(async () => {
 check('Settings opens as a modal', settings.open && settings.title === 'Settings')
 check('with defaults, storage and a danger zone', settings.sections.length === 3, settings.sections.join(' · '))
 check('offering the settings that are global', settings.fields.join(',').includes('Language'), settings.fields.join(', '))
-check('naming the database and its size', /hexscribe\.db$/.test(settings.dbPath ?? ''), settings.dbPath)
+// The file actually in use, not the default one: this check runs against a
+// scratch database (`serve.mjs --db`) precisely so it can press the danger
+// zone, and a panel that named the default while writing somewhere else would
+// be worse than one that named nothing.
+check('naming the database and its size', /\.db$/.test(settings.dbPath ?? ''), settings.dbPath)
 check('and reporting what is in it', settings.stats.some((s) => /Database size/.test(s)), settings.stats.join(' | '))
 check('the irreversible button starts disabled', settings.resetDisabled === true)
 

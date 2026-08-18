@@ -104,7 +104,13 @@
 # Everything worth keeping after a run finishes: transcripts, how long each one
 # took, and what went wrong. One SQLite file in the platform's data directory
 # (%LOCALAPPDATA%\hexscribe on Windows) -- set `path` to put it elsewhere.
+#
+# HEXSCRIBE_DB points a throwaway instance at its own file. Worth having as an
+# override rather than an edit here: trying something out should never be one
+# careless click away from deleting the transcripts you meant to keep.
 - name: './src/store.ts'
+  config:
+    path: !!js process.env.HEXSCRIBE_DB
 
 # Transcriptions that outlive the request that asked for them. An hour of audio
 # is minutes of NPU; holding an HTTP connection open for it means no progress,
