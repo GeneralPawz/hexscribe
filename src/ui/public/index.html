@@ -32,6 +32,14 @@
           <span id="rail-jobs-count" class="rail__count"></span>
         </button>
         <ul id="rail-runs" class="rail__runs"></ul>
+
+        <!-- Only while runs are picked with Ctrl+click: it belongs to the
+             selection, not to the rail. -->
+        <div id="rail-selection" class="rail__selection" hidden>
+          <span id="rail-selected-count" class="rail__selected-count"></span>
+          <button id="rail-delete" class="tool" type="button">Delete</button>
+          <button id="rail-clear" class="tool" type="button">Clear</button>
+        </div>
       </div>
 
       <div class="rail__foot">

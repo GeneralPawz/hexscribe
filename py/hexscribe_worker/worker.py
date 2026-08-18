@@ -116,6 +116,18 @@ class Worker:
             "profiles": profiles,
         }
 
+    def embed_ranges(self, params: dict) -> dict:
+        """A voice print from chosen utterances, for learning from a correction."""
+        if self.utterance_diarizer is None:
+            raise DiarizationUnavailable("this worker was started without an embedding model")
+        ranges = [
+            Utterance(start=float(item["start"]), end=float(item["end"]))
+            for item in params.get("ranges") or []
+        ]
+        result = self.utterance_diarizer.embed_ranges(params["path"], ranges)
+        _log(f"embedded {result['utterances']} corrected utterances ({result['seconds']}s)")
+        return result
+
     def compress_audio(self, params: dict) -> dict:
         """Re-encode audio small enough to be worth keeping."""
         started = time.perf_counter()
@@ -230,6 +242,8 @@ class Worker:
                     result = self.diarize(params)
                 elif method == "diarize_utterances":
                     result = self.diarize_utterances(params)
+                elif method == "embed_ranges":
+                    result = self.embed_ranges(params)
                 elif method == "compress_audio":
                     result = self.compress_audio(params)
                 else:

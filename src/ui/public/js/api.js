@@ -173,6 +173,16 @@ export async function enrollVoice({ name, embedding, seconds }) {
   return postJson('/v1/voices', { name, embedding, seconds })
 }
 
+/**
+ * Fold hand-assigned utterances into a voice already in the library.
+ *
+ * The server embeds the ranges from the run's own audio, so nothing but the
+ * times has to travel.
+ */
+export async function learnVoice({ name, runId, ranges }) {
+  return postJson('/v1/voices/learn', { name, runId, ranges })
+}
+
 export async function forgetVoice(name) {
   return postJson('/v1/voices/forget', { name })
 }

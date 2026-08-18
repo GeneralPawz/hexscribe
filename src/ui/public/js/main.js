@@ -1,8 +1,11 @@
 /** Wiring: picks up a file, asks the API, shows the result. */
 
 import {
+  deleteRun,
   detachAudio,
   getHealth,
+  getVoices,
+  learnVoice,
   getJob,
   getModels,
   getRun,
@@ -148,9 +151,21 @@ let chosen = null
 /** Whether this server can run the work off the request. Probed once, at boot. */
 let canBackground = false
 let canBrowse = false
+/** Whether corrections feed back into the voice library. A setting. */
+let learnEnabled = true
 let rail = null
 /** The stored run on screen, if the main pane is showing history rather than a new run. */
 let viewing = null
+/**
+ * Which stored run the transcript on screen is, whichever way it got there.
+ *
+ * Not the same question as `viewing`, which means "opened from history". A run
+ * that finished thirty seconds ago is just as much a row in the database, and
+ * it is the one somebody is most likely to correct -- so anything that needs to
+ * reach back to the recording (learning a voice from a fixed line) asks this
+ * rather than asking whether the page came from the rail.
+ */
+let runId = null
 let ticker = null
 let player = null
 let audioSeconds = 0
@@ -210,6 +225,7 @@ function selectFile(file) {
   els.submit.disabled = false
   setError(null)
   viewing = null
+  runId = null
   rail?.setActive(null)
   // A new file is what makes the last result stale, so this is where the
   // finished green goes back to the accent colour.
@@ -239,6 +255,7 @@ function chooseLocal(file) {
   els.submit.disabled = false
   setError(null)
   viewing = null
+  runId = null
   rail?.setActive(null)
 
   audioSeconds = 0
@@ -325,6 +342,8 @@ function renderToolbar() {
   // Merging a broken selection would silently swallow the rows between.
   els.mergeSelected.disabled = !adjacent || positions.length < 2
   els.mergeSelected.textContent = positions.length > 1 ? `Merge ${positions.length}` : 'Merge'
+  // The count on both, so neither button is ambiguous about its reach.
+  els.speakerSelected.textContent = positions.length > 1 ? `Speaker ${positions.length}` : 'Speaker'
 }
 
 /** Positions a speaker change applies to: the selection, or just this row. */
@@ -450,7 +469,10 @@ function openSpeakerChipMenu(speaker, position, event) {
     { heading: scope },
     ...others.slice(0, 5).map((entry) => ({
       label: `Move to ${short(entry.name)}`,
-      onSelect: () => edit(setSpeaker(current.segments, targets, entry.name)),
+      onSelect: () => {
+        edit(setSpeaker(current.segments, targets, entry.name))
+        void learnFromAssignment(entry.name, targets)
+      },
     })),
     {
       label: 'Move to a new speaker',
@@ -495,11 +517,56 @@ function openSpeakerPanel(speaker) {
       speaker,
       transcript: current,
       onRename: renameSpeaker,
-      // The panel changed the library, so a name shown as "recognised" may no
-      // longer be. Reopening rebuilds it against what is now true.
-      onChanged: () => {},
+      // Naming somebody here is what makes correcting a line afterwards worth
+      // anything: a correction is only folded into a print when the name is one
+      // the library holds, and until this runs the page does not know it does.
+      onChanged: () => void refreshVoices(),
     }),
   )
+}
+
+/**
+ * Names this machine already knows, so a correction can be learned from.
+ *
+ * Refreshed with the run list rather than per menu: it changes when somebody
+ * names a speaker, which is rare, and asking on every right-click would put a
+ * request between the pointer and the menu.
+ */
+let knownVoices = []
+
+/**
+ * Fold hand-assigned utterances into the voice they were assigned to.
+ *
+ * Only when the name is one the library already holds -- assigning to
+ * `SPEAKER_04` teaches nothing, because there is nobody by that name to teach.
+ * And only for a stored run, because the server needs the audio those
+ * utterances came from and a run it has never recorded has none.
+ *
+ * The correction is the interesting part: these are lines the clustering got
+ * wrong, so they are exactly the evidence the print was missing.
+ */
+async function learnFromAssignment(name, positions) {
+  if (!learnEnabled || !runId) return
+  if (!knownVoices.some((voice) => voice.name === name)) return
+
+  const ranges = positions
+    .map((position) => current.segments[position])
+    .filter(Boolean)
+    .map((segment) => ({ start: segment.start, end: segment.end }))
+  if (!ranges.length) return
+
+  try {
+    const result = await learnVoice({ name, runId, ranges })
+    if (result.learned) {
+      setError(null)
+      // Said out loud: it changed stored biometric data, quietly would be wrong.
+      els.dropHint.textContent =
+        `learned ${result.utterances} utterance${result.utterances === 1 ? '' : 's'} for ${name}`
+    }
+  } catch {
+    // Never fatal. The assignment is what was asked for; the learning is a
+    // bonus, and the audio may simply be gone.
+  }
 }
 
 function openSpeakerMenu(x, y, positions) {
@@ -511,7 +578,10 @@ function openSpeakerMenu(x, y, positions) {
     ...names.map((name) => ({
       label: name,
       checked: only === name,
-      onSelect: () => edit(setSpeaker(current.segments, positions, name)),
+      onSelect: () => {
+        edit(setSpeaker(current.segments, positions, name))
+        void learnFromAssignment(name, positions)
+      },
     })),
     {
       label: 'New speaker',
@@ -587,7 +657,14 @@ function openRowMenu(position, event, textElement) {
     {
       // Reassignment moved here when the chip took over identity. Both are
       // still one click from a row, and neither has to mean two things.
-      label: 'Change speaker',
+      //
+      // Ctrl+click a run of rows first and this changes all of them -- so it
+      // says so. An action that silently touched twelve rows because twelve
+      // happened to be selected is the kind of surprise that costs trust once.
+      label:
+        speakerTargets(position).length > 1
+          ? `Change speaker · ${speakerTargets(position).length} selected`
+          : 'Change speaker',
       onSelect: () => openSpeakerMenu(event.clientX, event.clientY, speakerTargets(position)),
     },
     {
@@ -673,6 +750,7 @@ els.form.addEventListener('submit', async (event) => {
   els.submit.disabled = true
   els.submit.textContent = 'Transcribing…'
   viewing = null
+  runId = null
   rail?.setActive(null)
 
   const started = performance.now()
@@ -702,6 +780,9 @@ els.form.addEventListener('submit', async (event) => {
 
     // A receipt, or the transcript itself. The server decides which by whether
     // it has the jobs plugin; the page copes with either.
+    // A job's id *is* the run's id -- `history.ts` records it under the same
+    // one -- so this is where a fresh transcript learns which row it will be.
+    if (answer.id && answer.status) runId = answer.id
     const transcript = answer.id && answer.status ? await followJob(answer, started) : answer
     if (!transcript) return // the job failed, and `followJob` has said so
 
@@ -885,6 +966,7 @@ async function reattach() {
   }
 
   baseName = (receipt.name ?? 'transcript').replace(/\.[^.]+$/, '')
+  runId = receipt.id
   // No file was dropped this time, so there is nothing to play: the audio never
   // left the browser that uploaded it, and this is a different page load.
   seekable = false
@@ -908,9 +990,15 @@ async function reattach() {
 
 // --- history ------------------------------------------------------------
 
+/** The voice library, as the page last saw it. Kept for `learnFromAssignment`. */
+async function refreshVoices() {
+  knownVoices = await getVoices().catch(() => knownVoices)
+}
+
 async function refreshRuns() {
   try {
     rail?.setRuns(await getRuns())
+    await refreshVoices()
   } catch {
     // A missing history is not worth an error banner over a working transcript.
   }
@@ -936,6 +1024,7 @@ async function openRun(id) {
       // A failed run has no transcript to show, but every reason to be looked
       // at — so the panel opens on its own with the error and the log.
       viewing = run
+      runId = run.id
       rail?.setActive(id)
       show(els.result, false)
       openAside(runPanel(runPanelOptions(run)))
@@ -943,6 +1032,7 @@ async function openRun(id) {
     }
 
     viewing = run
+    runId = run.id
     selected = null
     chosen = null
     els.submit.disabled = true
@@ -1000,6 +1090,7 @@ function runPanelOptions(run) {
     onDeleted: async () => {
       closeAside()
       viewing = null
+      runId = null
       show(els.result, false)
       setState(selected || chosen ? 'armed' : 'waiting')
       await refreshRuns()
@@ -1010,6 +1101,7 @@ function runPanelOptions(run) {
       // Follow it as a live job again: it is running, and the words carry on
       // appearing where they left off.
       const receipt = { id, name: run.name }
+      runId = id
       setState('busy', 'resuming…')
       const transcript = await followJob(receipt, performance.now()).catch((error) => {
         setError(error.message)
@@ -1043,6 +1135,7 @@ function newTranscript() {
   closeAside()
   closeModal()
   viewing = null
+  runId = null
   selected = null
   chosen = null
   current = null
@@ -1075,6 +1168,7 @@ let engines = []
 /** Put the saved defaults into the form. What "global settings" means here. */
 function applySettings(settings) {
   if (!settings) return
+  learnEnabled = settings.learnFromCorrections !== false
   els.language.value = settings.language ?? ''
   els.task.value = settings.task ?? 'transcribe'
   els.diarize.checked = Boolean(settings.diarize)
@@ -1099,6 +1193,22 @@ async function init() {
   rail = mountRail({
     onNew: newTranscript,
     onOpenRun: openRun,
+    onDeleteRuns: async (ids) => {
+      // One at a time: the endpoint deletes one run, and a partial failure
+      // should leave the ones that worked deleted rather than pretending none
+      // of it happened.
+      for (const id of ids) await deleteRun(id).catch(() => {})
+      // Whatever is on screen may have just been deleted -- including a run
+      // that was never opened from the rail, which is why this asks `runId`.
+      if (runId && ids.includes(runId)) {
+        closeAside()
+        viewing = null
+        runId = null
+        show(els.result, false)
+        setState(selected || chosen ? 'armed' : 'waiting')
+      }
+      await refreshRuns()
+    },
     onSettings: () =>
       openModal(
         settingsModal({

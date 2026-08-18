@@ -87,6 +87,9 @@ export function settingsModal({ models, onSaved }) {
         const storeAudio = checkField('Keep a copy of uploaded audio', settings.storeAudio,
           'Re-encoded to Opus, about 10 MB an hour, so a transcript stays playable after the upload is deleted. Files transcribed from disk are never copied.')
 
+        const learn = checkField('Learn from corrections', settings.learnFromCorrections,
+          'When you assign utterances to a speaker the app already knows, those utterances are folded into that person’s voice print, so the next recording is easier to recognise. Needs the audio to still be available.')
+
         const path = document.createElement('input')
         path.type = 'text'
         path.readOnly = true
@@ -97,10 +100,12 @@ export function settingsModal({ models, onSaved }) {
         root.append(
           section('Storage',
             storeAudio.wrapper,
+            learn.wrapper,
             field('Database', path, 'Set `store.path` in cordis.yml to move it. Copy this file to back everything up.'),
             stat('Runs kept', String(stats.runs)),
             stat('Stored recordings', `${stats.audioClips} · ${humanSize(stats.audioBytes)}`),
             stat('Log entries', String(stats.logs)),
+            stat('Named voices', String(stats.voices ?? 0)),
             stat('Database size', humanSize(stats.fileBytes))),
         )
 
@@ -158,7 +163,8 @@ export function settingsModal({ models, onSaved }) {
         danger.classList.add('modal__section--danger')
         danger.querySelector('div').className = 'modal__note'
         danger.querySelector('div').textContent =
-          'Deleting audio keeps every transcript. Deleting the database keeps nothing.'
+          'Deleting audio keeps every transcript. Deleting the database keeps nothing — ' +
+          'including the named voices, which live in it too.'
         root.append(danger)
 
         // --- save ---
@@ -177,6 +183,7 @@ export function settingsModal({ models, onSaved }) {
               merge: merge.input.checked,
               notify: notify.input.checked,
               storeAudio: storeAudio.input.checked,
+              learnFromCorrections: learn.input.checked,
             })
             say('Saved.', 'ok')
             onSaved?.(result.settings)

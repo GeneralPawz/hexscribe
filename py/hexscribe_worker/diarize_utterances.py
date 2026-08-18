@@ -135,6 +135,44 @@ class UtteranceDiarizer:
         norm = float(np.linalg.norm(vector))
         return vector / norm if norm else vector
 
+    def embed_ranges(self, path: str | Path, ranges: list[Utterance]) -> dict:
+        """One voice print from a handful of chosen utterances.
+
+        What a correction is worth. When somebody assigns a line to a speaker the
+        clustering did not recognise, that line is evidence about how the person
+        sounds -- evidence nobody had when the print was made. Embedding just
+        those ranges and folding them in makes the print better for next time.
+
+        Duration-weighted like every other print here, and short clips are
+        skipped for the same reason: "ja" is not evidence of anything.
+        """
+        samples = audio_mod.load_audio(path)
+        rate = audio_mod.SAMPLE_RATE
+
+        total = None
+        seconds = 0.0
+        used = 0
+        for span in ranges:
+            clip = samples[int(span.start * rate) : int(span.end * rate)]
+            if len(clip) < int(self.min_seconds * rate):
+                continue
+            weight = max(0.0, span.end - span.start)
+            vector = self.embed(clip) * weight
+            total = vector if total is None else total + vector
+            seconds += weight
+            used += 1
+
+        if total is None:
+            return {"embedding": [], "seconds": 0.0, "utterances": 0}
+        norm = float(np.linalg.norm(total))
+        if not norm:
+            return {"embedding": [], "seconds": 0.0, "utterances": 0}
+        return {
+            "embedding": [round(float(v), 6) for v in total / norm],
+            "seconds": round(seconds, 2),
+            "utterances": used,
+        }
+
     def diarize(
         self,
         path: str | Path,

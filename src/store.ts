@@ -76,6 +76,8 @@ export interface StoreStats {
   audioClips: number
   audioBytes: number
   logs: number
+  /** Named voices. The most sensitive count here, so it is reported. */
+  voices: number
   /** The database file itself, which is what a person means by "how big is it". */
   fileBytes: number
   path: string
@@ -101,6 +103,13 @@ export interface Settings {
   notify: boolean
   /** Keep a compressed copy of uploaded audio, so a run stays playable. */
   storeAudio: boolean
+  /**
+   * Fold hand-assigned utterances into the voice they were assigned to.
+   *
+   * Switchable because it edits biometric data as a side effect of an editing
+   * action, which is not something to do to somebody without asking.
+   */
+  learnFromCorrections: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -111,6 +120,7 @@ export const DEFAULT_SETTINGS: Settings = {
   merge: true,
   notify: false,
   storeAudio: true,
+  learnFromCorrections: true,
 }
 
 export interface Config {
@@ -184,7 +194,24 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS logs_created ON logs (created DESC);
 
+  -- Voice prints. Here rather than in a file beside the code because this is
+  -- the most sensitive thing the app holds -- it identifies a specific person by
+  -- their voice -- and it belongs under the same "delete everything" button as
+  -- the transcripts, backed up by copying the same one file.
+  CREATE TABLE IF NOT EXISTS voices (
+    name       TEXT PRIMARY KEY,
+    embedding  TEXT NOT NULL,
+    seconds    REAL NOT NULL DEFAULT 0,
+    recordings INTEGER NOT NULL DEFAULT 1,
+    updated    INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
@@ -448,6 +475,54 @@ export class StoreService extends Service {
     return count
   }
 
+  // --- voices ------------------------------------------------------------
+
+  /**
+   * Named voices, prints and all.
+   *
+   * The embedding is stored as JSON rather than a blob: it is 192 numbers, it is
+   * read whole or not at all, and being able to read the file with any SQLite
+   * browser is worth more here than the bytes saved.
+   */
+  listVoices(): Array<{ name: string; embedding: number[]; seconds: number; recordings: number }> {
+    const rows = this.db.prepare('SELECT name, embedding, seconds, recordings FROM voices').all() as unknown as Array<{
+      name: string
+      embedding: string
+      seconds: number
+      recordings: number
+    }>
+    const out = []
+    for (const row of rows) {
+      try {
+        out.push({ ...row, embedding: JSON.parse(row.embedding) as number[] })
+      } catch {
+        // A print that will not parse is not a print. Skipping it loses one
+        // name; throwing would lose the library.
+        this.log('warn', `voice ${row.name} has an unreadable print and was skipped`)
+      }
+    }
+    return out
+  }
+
+  saveVoice(voice: { name: string; embedding: number[]; seconds: number; recordings: number }) {
+    this.db
+      .prepare(
+        `INSERT INTO voices (name, embedding, seconds, recordings, updated) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET
+           embedding = excluded.embedding, seconds = excluded.seconds,
+           recordings = excluded.recordings, updated = excluded.updated`,
+      )
+      .run(voice.name, JSON.stringify(voice.embedding), voice.seconds, voice.recordings, Date.now())
+  }
+
+  deleteVoice(name: string): boolean {
+    return this.db.prepare('DELETE FROM voices WHERE name = ?').run(name).changes > 0
+  }
+
+  renameVoice(from: string, to: string): boolean {
+    return this.db.prepare('UPDATE voices SET name = ?, updated = ? WHERE name = ?').run(to, Date.now(), from).changes > 0
+  }
+
   // --- logs ------------------------------------------------------------
 
   log(level: LogLevel, message: string, runId: string | null = null) {
@@ -491,6 +566,27 @@ export class StoreService extends Service {
     return this.settings()
   }
 
+  // --- one-time jobs ----------------------------------------------------
+
+  /**
+   * Has this database already done `key`?
+   *
+   * For migrations that must happen once and never again. The fact belongs
+   * *here* rather than on disk beside the code: an earlier version marked the
+   * old `voices.json` as imported by renaming it, which meant a second instance
+   * pointed at a scratch database quietly took the only copy of somebody's
+   * voice prints with it and left the real library empty.
+   */
+  marked(key: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 AS one FROM meta WHERE key = ?').get(key))
+  }
+
+  mark(key: string): void {
+    this.db
+      .prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING')
+      .run(key, String(Date.now()))
+  }
+
   // --- housekeeping ----------------------------------------------------
 
   stats(): StoreStats {
@@ -514,6 +610,7 @@ export class StoreService extends Service {
       audioClips: one('SELECT COUNT(*) AS value FROM audio'),
       audioBytes: one('SELECT COALESCE(SUM(LENGTH(bytes)), 0) AS value FROM audio'),
       logs: one('SELECT COUNT(*) AS value FROM logs'),
+      voices: one('SELECT COUNT(*) AS value FROM voices'),
       fileBytes,
       path: this.path,
     }
@@ -530,9 +627,15 @@ export class StoreService extends Service {
 
   /** The danger zone's larger button. Everything, including the settings. */
   reset() {
+    // Voices included, emphatically. They used to live in a file beside the
+    // code, which meant this button deleted every transcript and left behind the
+    // one thing that identifies people by their voice.
     this.db.exec(
       'DELETE FROM audio; DELETE FROM run_segments; DELETE FROM transcripts; ' +
-        'DELETE FROM runs; DELETE FROM logs; DELETE FROM settings;',
+        // `meta` survives deliberately: it records migrations that already
+        // happened, and re-running one would resurrect the very data this
+        // button was pressed to destroy.
+        'DELETE FROM runs; DELETE FROM logs; DELETE FROM voices; DELETE FROM settings;',
     )
     this.vacuum()
   }

@@ -1407,3 +1407,35 @@ body {
 .menu__heading:first-child {
   margin-top: 0;
 }
+
+/* Runs picked with Ctrl+click, and what can be done with them. */
+.rail__run.is-picked {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.rail__selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  margin: 0.4rem 0 0;
+  padding: 0.35rem 0.4rem;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  white-space: nowrap;
+}
+
+.rail__selected-count {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail__selection .tool {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.35rem;
+}

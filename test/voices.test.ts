@@ -14,6 +14,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import * as storePlugin from '../src/store.ts'
 import * as voicesPlugin from '../src/voices.ts'
 import { blend, distance } from '../src/voices.ts'
 import * as asrPlugin from '../src/asr.ts'
@@ -35,12 +36,17 @@ const BOB = unit(0, 1, 0)
 async function library(config: Partial<voicesPlugin.Config> = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'hexscribe-voices-'))
   const path = join(directory, 'voices.json')
+  const database = join(directory, 'voices.db')
   const ctx = new Context()
+  // Voices live in the database now, so the library needs one. `path` is only
+  // the old file it would import from if one were lying around.
+  await ctx.plugin(storePlugin, { path: database })
   await ctx.plugin(voicesPlugin, { path, threshold: 0.55, margin: 0.05, ...config })
   await ctx.voices.ready()
   return {
     ctx,
     path,
+    database,
     dispose: async () => {
       await ctx.root.fiber.dispose()
       await rm(directory, { recursive: true, force: true })
@@ -121,8 +127,9 @@ test('names survive a restart, and forgetting is forgetting', async (t) => {
 
   await app.ctx.voices.enroll('Alice', ALICE, 30)
 
-  // A second service over the same file: what the next run of the app sees.
+  // A second service over the same database: what the next run of the app sees.
   const reopened = new Context()
+  await reopened.plugin(storePlugin, { path: app.database })
   await reopened.plugin(voicesPlugin, { path: app.path, threshold: 0.55, margin: 0.05 })
   await reopened.voices.ready()
   assert.equal((await reopened.voices.match(ALICE_AGAIN))?.name, 'Alice')
@@ -131,8 +138,7 @@ test('names survive a restart, and forgetting is forgetting', async (t) => {
   assert.equal(await app.ctx.voices.match(ALICE), undefined)
   assert.equal(await app.ctx.voices.forget('Alice'), false, 'and says so when there was nothing')
 
-  const onDisk = JSON.parse(await readFile(app.path, 'utf8'))
-  assert.deepEqual(onDisk.voices, [], 'the file is the truth, not just the memory')
+  assert.deepEqual(app.ctx.store.listVoices(), [], 'the database is the truth, not just the memory')
   await reopened.root.fiber.dispose()
 })
 
@@ -201,6 +207,7 @@ async function app(config: Partial<voicesPlugin.Config> = {}) {
   const ctx = new Context()
   await ctx.plugin(asrPlugin, { default: 'mock' })
   await ctx.plugin(diarizePlugin, {})
+  await ctx.plugin(storePlugin, { path: join(directory, 'voices.db') })
   await ctx.plugin(voicesPlugin, {
     path: join(directory, 'voices.json'),
     threshold: 0.55,
@@ -264,4 +271,111 @@ test('without the library, speakers keep their numbers and nothing breaks', asyn
   assert.deepEqual(result.speakers, ['SPEAKER_00', 'SPEAKER_01'])
   assert.equal(result.voices?.length, 2, 'the prints are still carried, just unnamed')
   assert.equal(result.voices?.[0].matched, undefined)
+})
+
+// --- where the prints live -----------------------------------------------
+
+test('deleting the whole database takes the voices with it', async (t) => {
+  // The reason they moved. They used to sit in a JSON file beside the code, so
+  // the button promising to delete everything wiped every transcript and left
+  // behind the one thing that identifies people by their voice.
+  const app = await library()
+  t.after(app.dispose)
+
+  await app.ctx.voices.enroll('Alice', ALICE, 30)
+  assert.equal(app.ctx.store.stats().voices, 1)
+
+  app.ctx.store.reset()
+
+  assert.equal(app.ctx.store.stats().voices, 0)
+  assert.deepEqual(app.ctx.store.listVoices(), [])
+})
+
+test('an older voices.json is imported once, and kept', async (t) => {
+  // Somebody upgrading has a file full of prints. Losing them would mean every
+  // person they had named going unrecognised, silently.
+  const directory = await mkdtemp(join(tmpdir(), 'hexscribe-import-'))
+  const path = join(directory, 'voices.json')
+  const { writeFile, readdir } = await import('node:fs/promises')
+  await writeFile(
+    path,
+    JSON.stringify({ voices: [{ name: 'Mara', embedding: ALICE, seconds: 90, recordings: 2 }] }),
+    'utf8',
+  )
+
+  const ctx = new Context()
+  await ctx.plugin(storePlugin, { path: join(directory, 'imported.db') })
+  await ctx.plugin(voicesPlugin, { path, threshold: 0.55, margin: 0.05 })
+  await ctx.voices.ready()
+
+  assert.equal((await ctx.voices.match(ALICE_AGAIN))?.name, 'Mara', 'the print came across')
+  assert.equal(ctx.store.listVoices()[0].seconds, 90, 'with the evidence behind it')
+
+  // Untouched, deliberately. Marking the import by renaming the file meant a
+  // second instance on a scratch database could take the only copy of somebody's
+  // voice prints with it and leave the real library empty and silent.
+  const left = await readdir(directory)
+  assert.ok(left.includes('voices.json'), 'the file it came from is left exactly where it was')
+  assert.equal(
+    JSON.parse(await readFile(path, 'utf8')).voices[0].name,
+    'Mara',
+    'and unchanged',
+  )
+
+  await ctx.root.fiber.dispose()
+  await rm(directory, { recursive: true, force: true })
+})
+
+test('an import happens once per database, not on every start', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'hexscribe-import-'))
+  const database = join(directory, 'once.db')
+  const path = join(directory, 'voices.json')
+  const { writeFile } = await import('node:fs/promises')
+  await writeFile(path, JSON.stringify({ voices: [{ name: 'Mara', embedding: ALICE, seconds: 90, recordings: 2 }] }), 'utf8')
+
+  const first = new Context()
+  await first.plugin(storePlugin, { path: database })
+  await first.plugin(voicesPlugin, { path, threshold: 0.55, margin: 0.05 })
+  await first.voices.ready()
+  await first.voices.forget('Mara')
+  await first.root.fiber.dispose()
+
+  // The database remembers having imported, so a second start does not do it
+  // again -- a forgotten voice must stay forgotten rather than coming back.
+  const second = new Context()
+  await second.plugin(storePlugin, { path: database })
+  await second.plugin(voicesPlugin, { path, threshold: 0.55, margin: 0.05 })
+  await second.voices.ready()
+  assert.deepEqual(await second.voices.list(), [], 'forgotten stays forgotten')
+
+  await second.root.fiber.dispose()
+  await rm(directory, { recursive: true, force: true })
+})
+
+test('deleting everything does not let the old file put the voices back', async (t) => {
+  // The worst version of this: press "delete the whole database", restart, and
+  // find the named voices sitting there again because a file nobody remembered
+  // was still on disk.
+  const directory = await mkdtemp(join(tmpdir(), 'hexscribe-reset-'))
+  const database = join(directory, 'reset.db')
+  const path = join(directory, 'voices.json')
+  const { writeFile } = await import('node:fs/promises')
+  await writeFile(path, JSON.stringify({ voices: [{ name: 'Mara', embedding: ALICE, seconds: 90, recordings: 2 }] }), 'utf8')
+
+  const first = new Context()
+  await first.plugin(storePlugin, { path: database })
+  await first.plugin(voicesPlugin, { path, threshold: 0.55, margin: 0.05 })
+  await first.voices.ready()
+  assert.equal((await first.voices.list()).length, 1)
+  first.store.reset()
+  await first.root.fiber.dispose()
+
+  const second = new Context()
+  await second.plugin(storePlugin, { path: database })
+  await second.plugin(voicesPlugin, { path, threshold: 0.55, margin: 0.05 })
+  await second.voices.ready()
+  assert.deepEqual(await second.voices.list(), [], 'deleted stays deleted')
+
+  await second.root.fiber.dispose()
+  await rm(directory, { recursive: true, force: true })
 })

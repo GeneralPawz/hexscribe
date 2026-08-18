@@ -28,8 +28,9 @@ const ICONS = {
  * @param {() => void} options.onNew
  * @param {(id: string) => void} options.onOpenRun
  * @param {() => void} options.onSettings
+ * @param {(ids: string[]) => Promise<void>} options.onDeleteRuns
  */
-export function mountRail({ onNew, onOpenRun, onSettings }) {
+export function mountRail({ onNew, onOpenRun, onSettings, onDeleteRuns }) {
   const rail = document.querySelector('#rail')
   const list = rail.querySelector('#rail-runs')
   const toggle = rail.querySelector('#rail-jobs-toggle')
@@ -50,6 +51,53 @@ export function mountRail({ onNew, onOpenRun, onSettings }) {
   applyExpanded()
 
   let active = null
+  /**
+   * Runs picked with Ctrl+click, for deleting several at once.
+   *
+   * The same gesture the transcript uses to select utterances, because it is the
+   * same idea and learning it twice would be silly. A plain click still opens a
+   * run -- selecting is the deliberate variant, not the default.
+   */
+  const picked = new Set()
+  const bar = rail.querySelector('#rail-selection')
+  const selectedLabel = bar.querySelector('#rail-selected-count')
+  const remove = bar.querySelector('#rail-delete')
+  const clear = bar.querySelector('#rail-clear')
+
+  function renderSelection() {
+    bar.hidden = picked.size === 0
+    selectedLabel.textContent = `${picked.size} selected`
+    remove.textContent = picked.size > 1 ? `Delete ${picked.size}` : 'Delete'
+    remove.dataset.armed = ''
+    remove.classList.remove('tool--danger')
+    for (const button of list.querySelectorAll('.rail__run')) {
+      button.classList.toggle('is-picked', picked.has(button.dataset.id))
+    }
+  }
+
+  remove.addEventListener('click', async () => {
+    if (remove.dataset.armed !== 'yes') {
+      // Two clicks, because this deletes transcripts that cost NPU time to make
+      // and there is no undo for it.
+      remove.dataset.armed = 'yes'
+      remove.textContent = `Really delete ${picked.size}?`
+      remove.classList.add('tool--danger')
+      return
+    }
+    remove.disabled = true
+    try {
+      await onDeleteRuns([...picked])
+      picked.clear()
+    } finally {
+      remove.disabled = false
+      renderSelection()
+    }
+  })
+
+  clear.addEventListener('click', () => {
+    picked.clear()
+    renderSelection()
+  })
 
   return {
     /** @param {Array<object>} runs newest first, as the server returns them */
@@ -85,8 +133,18 @@ export function mountRail({ onNew, onOpenRun, onSettings }) {
                   ? 'running…'
                   : `${clock(run.audio_seconds)} · ${run.segments} utt${run.has_audio ? ' · ♪' : ''}`
 
+          if (picked.has(run.id)) button.classList.add('is-picked')
+
           button.append(name, meta)
-          button.addEventListener('click', () => onOpenRun(run.id))
+          button.addEventListener('click', (event) => {
+            if (event.ctrlKey || event.metaKey) {
+              event.preventDefault()
+              picked.has(run.id) ? picked.delete(run.id) : picked.add(run.id)
+              renderSelection()
+              return
+            }
+            onOpenRun(run.id)
+          })
           item.append(button)
           return item
         }),
@@ -97,6 +155,10 @@ export function mountRail({ onNew, onOpenRun, onSettings }) {
         empty.textContent = 'Nothing yet'
         list.append(empty)
       }
+      // A run that has been deleted cannot stay selected.
+      const alive = new Set(runs.map((run) => run.id))
+      for (const id of [...picked]) if (!alive.has(id)) picked.delete(id)
+      renderSelection()
     },
 
     /** Highlight which run the main pane is showing. */

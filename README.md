@@ -52,6 +52,7 @@ Options: `--lang`, `--task transcribe|translate`, `--format text|srt|vtt|json`,
 
 ```powershell
 .\hexscribe.ps1 serve --port 9000        # or: npm run serve
+npm run serve -- --db .\scratch.db       # a throwaway library and history
 ```
 
 Then open **http://localhost:9000** — drop a file, pick a language, get a
@@ -97,6 +98,7 @@ await client.audio.transcriptions.create({
 | `POST /v1/jobs/forget` | drop a finished job early |
 | `GET /v1/voices` | the named voices this machine knows |
 | `POST /v1/voices` | name a voice, from a transcript's `voices` entry |
+| `POST /v1/voices/learn` | fold hand-corrected utterances into a stored print |
 | `POST /v1/voices/{rename,forget}` | correct a name, or forget a person |
 | `GET /` | the browser UI (from the `ui` plugin; remove it and this 404s) |
 | `POST /ui/format?to=srt` | re-render a transcript the caller already has |
@@ -124,6 +126,14 @@ it is what verifies the browser-only behaviour the node suite cannot reach:
 node scripts/ui-check.mjs http://127.0.0.1:9000/ test\fixtures\One_Speaker_de.wav out\ui.png
 $env:HEXSCRIBE_SCHEME='light'   # the field is drawn differently in each theme
 ```
+
+The ones that delete things — `shell-check.mjs`, `learn-check.mjs` — want a
+server started with `--db`, pointed at a throwaway file. `learn-check.mjs` is the
+only check that follows a correction all the way through: it names a voice, moves
+two lines of a *different* speaker onto that name, and then asks the server
+whether the stored print actually grew. It was written because the feature looked
+finished and was not — the browser never sent the request, and the server would
+have refused it if it had.
 
 Some tests want a real recording, because synthetic tones do not exercise
 resampling, a genuine mel spectrum, or a decode loop that terminates on speech.
@@ -307,6 +317,11 @@ there is one transcript view and not two — and opens the right-hand aside with
 what the run cost: when, how long, how fast, which engine, and its log. That is
 also where a recording is disposed of, because "this one is 10 MB and I have the
 file on disk anyway" is a judgement about *that* run and not a global setting.
+
+**Ctrl+click** picks runs out of that list instead of opening them, the same
+gesture the transcript uses to select utterances, and the bar that appears
+deletes the lot. It takes two clicks — the second says *Really delete 3?* —
+because these are transcripts that cost NPU time to make and there is no undo.
 
 **Settings** is a modal, and a `<dialog>` rather than a div and a scrim: the
 browser already knows how to trap focus, close on Escape and paint a backdrop.
@@ -551,13 +566,51 @@ Enrolling the same person again **improves** the print rather than replacing it,
 weighted by how much speech is behind each side — a voice heard in two rooms is
 described better by both than by whichever was most recent.
 
-**Where it lives.** `voices.json`, next to the composition, and it is
-gitignored. Speaker embeddings identify a specific person by their voice, which
-makes this the most sensitive file the app writes — more so than a transcript,
-because it is the thing that recognises someone in a recording they are not
-expecting to be in. It never leaves the machine, the path is configuration, and
-deleting the file forgets everyone. Remove `voices.ts` from `cordis.yml` and
-speakers stay numbered; everything else is unchanged.
+### A correction is evidence
+
+The print made from a recording is only as good as the utterances the clustering
+put together, and when it puts one of them with the wrong person, fixing that by
+hand is the app being told something it could not work out on its own.
+
+So it keeps it. Assign an utterance — or a Ctrl+click selection of them — to a
+speaker the library already holds, and those exact ranges are embedded from the
+run's own audio and folded into that person's print:
+
+> learned 2 utterances for Mara
+
+Only for names already in the library: moving a line to `SPEAKER_04` teaches
+nothing, because there is nobody by that name to teach. Only for a stored run,
+because the audio has to still exist — the compressed copy or the file on disk.
+The embeddings are recomputed rather than carried, since shipping one per
+utterance to the browser would be a megabyte of vectors on every transcript,
+almost all of it never used; only the lines actually corrected are ever embedded.
+It is never fatal — the assignment is what was asked for, and the learning is a
+bonus — and *Learn from corrections* in Settings turns it off.
+
+Two things follow from this being biometric data rather than a convenience: it
+happens on an explicit correction, never on a guess, and it is said out loud when
+it happens rather than quietly.
+
+**Where it lives.** In the database, with everything else, and that placement
+took a bug to get right. It used to be `voices.json` next to the composition,
+which meant Settings' *delete the whole database* wiped every transcript and left
+the voice prints behind — the most sensitive thing here was the one thing that
+button did not remove. Speaker embeddings identify a specific person by their
+voice, more so than a transcript does, because they recognise someone in a
+recording they were not expecting to be in.
+
+An older `voices.json` is imported once per database and **left exactly where it
+is**. The first version of that import renamed the file to mark it done, which
+looked tidy and cost a real library: a second instance started against a scratch
+database imported the prints, renamed the file, and left the real one with
+nothing to import and nothing to say about it. A migration that already happened
+is a fact about the database, so it is recorded there — in a `meta` table that
+survives *delete everything*, since re-running the import would resurrect exactly
+the data that button was pressed to destroy.
+
+It never leaves the machine, it is backed up by copying the same single file as
+everything else, and remove `voices.ts` from `cordis.yml` and speakers stay
+numbered; everything else is unchanged.
 
 ### One panel, many contents
 
@@ -1041,6 +1094,7 @@ scripts/ui-check.mjs  end-to-end UI check over the DevTools Protocol
 scripts/reattach-check.mjs  proves a job survives the page that started it
 scripts/shell-check.mjs     rail, history, settings, and the file picker
 scripts/stream-check.mjs    the transcript appearing as it is decoded
+scripts/learn-check.mjs     a correction reaching the stored voice print
 scripts/toast.ps1           the Windows progress toast, driven over stdin
 py/hexscribe_worker/  worker: audio.py, qnn.py, whisper_qnn.py, diarize.py,
                       diarize_utterances.py, worker.py

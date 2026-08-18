@@ -1,13 +1,17 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { Service, type Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import type {} from './store.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
     voices: VoiceService
   }
 }
+
+/** Marker for the one-time import, kept in the database it happened to. */
+const IMPORTED = 'voices-imported'
 
 /** A voice the user has named, and the print that recognises it again. */
 export interface Voice {
@@ -44,7 +48,7 @@ export interface Config {
 export const Config: Schema<Config> = Schema.object({
   path: Schema.string()
     .default('voices.json')
-    .description('Where named voices are stored. Delete the file to forget everyone.'),
+    .description('An older library file to import once, if one is lying around. Voices live in the database now.'),
   threshold: Schema.number()
     .default(0.55)
     .description('Cosine distance under which a voice is the same person. Lower is stricter.'),
@@ -85,11 +89,17 @@ export function blend(a: Voice, embedding: number[], seconds: number): number[] 
  * that it only has to be given once, because the next recording of the same
  * person can be recognised.
  *
- * A local file, on purpose. This is biometric data in the sense that matters:
- * it identifies a specific person by their voice. It never leaves the machine,
- * the path is configuration, and deleting the file forgets everyone. Removing
- * this plugin from `cordis.yml` leaves transcription and diarization working
- * exactly as before, with speakers numbered rather than named.
+ * Stored in the database with everything else, and that placement is the point.
+ * This is biometric data in the sense that matters -- it identifies a specific
+ * person by their voice -- and it used to sit in a JSON file beside the code,
+ * which meant Settings' "delete the whole database" wiped every transcript and
+ * left the voice prints behind. The most sensitive thing here was the one thing
+ * that button did not remove.
+ *
+ * It never leaves the machine, it is backed up by copying the same single file
+ * as everything else, and removing this plugin from `cordis.yml` leaves
+ * transcription and diarization working exactly as before, with speakers
+ * numbered rather than named.
  */
 export class VoiceService extends Service {
   private voices = new Map<string, Voice>()
@@ -108,25 +118,45 @@ export class VoiceService extends Service {
   }
 
   private async load(): Promise<void> {
-    try {
-      const raw = await readFile(this.file, 'utf8')
-      const stored = JSON.parse(raw) as { voices?: Voice[] }
-      for (const voice of stored.voices ?? []) {
-        if (voice?.name && Array.isArray(voice.embedding)) this.voices.set(voice.name, voice)
-      }
-    } catch (error) {
-      // A missing file is the normal first run. Anything else is worth saying
-      // out loud rather than silently starting with an empty library.
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        this.ctx.logger?.warn?.(`could not read ${this.file}: ${error}`)
-      }
-    }
+    for (const voice of this.ctx.store.listVoices()) this.voices.set(voice.name, voice)
+    if (!this.voices.size) await this.importOldFile()
   }
 
-  private async save(): Promise<void> {
-    await mkdir(dirname(this.file), { recursive: true })
-    const body = { voices: [...this.voices.values()] }
-    await writeFile(this.file, `${JSON.stringify(body, null, 2)}\n`, 'utf8')
+  /**
+   * Take over a `voices.json` from before the library moved into the database.
+   *
+   * Once per database, and only into an empty library — recorded in the
+   * database rather than by touching the file. An earlier version renamed the
+   * file to mark it done, which looked tidy and was dangerous: a second
+   * instance run against a scratch database imported the prints, renamed the
+   * file, and left the real library with nothing to import and nothing to say
+   * about it. The file is never modified now. It is somebody's voice prints,
+   * and this code has no business being the last thing holding them.
+   */
+  private async importOldFile(): Promise<void> {
+    if (this.ctx.store.marked(IMPORTED)) return
+    let raw: string
+    try {
+      raw = await readFile(this.file, 'utf8')
+    } catch {
+      return // no file, which is the normal case
+    }
+    try {
+      const stored = JSON.parse(raw) as { voices?: Voice[] }
+      let imported = 0
+      for (const voice of stored.voices ?? []) {
+        if (!voice?.name || !Array.isArray(voice.embedding)) continue
+        this.voices.set(voice.name, voice)
+        this.ctx.store.saveVoice(voice)
+        imported += 1
+      }
+      if (imported) {
+        this.ctx.store.mark(IMPORTED)
+        this.ctx.store.log('info', `imported ${imported} voices from ${this.file} into the database`)
+      }
+    } catch (error) {
+      this.ctx.logger?.warn?.(`could not import ${this.file}: ${error}`)
+    }
   }
 
   async ready(): Promise<void> {
@@ -183,7 +213,7 @@ export class VoiceService extends Service {
       : { name: trimmed, embedding, seconds, recordings: 1 }
 
     this.voices.set(trimmed, voice)
-    await this.save()
+    this.ctx.store.saveVoice(voice)
     return voice
   }
 
@@ -195,19 +225,20 @@ export class VoiceService extends Service {
     if (!voice || !trimmed) return undefined
     this.voices.delete(from)
     this.voices.set(trimmed, { ...voice, name: trimmed })
-    await this.save()
+    this.ctx.store.renameVoice(from, trimmed)
     return this.voices.get(trimmed)
   }
 
   async forget(name: string): Promise<boolean> {
     await this.loaded
     const removed = this.voices.delete(name)
-    if (removed) await this.save()
+    if (removed) this.ctx.store.deleteVoice(name)
     return removed
   }
 }
 
 export const name = 'voices'
+export const inject = ['store']
 
 export function apply(ctx: Context, config: Config) {
   ctx.plugin(VoiceService, config)
