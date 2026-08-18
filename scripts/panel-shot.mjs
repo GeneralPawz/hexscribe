@@ -86,19 +86,47 @@ await evaluate(`
   document.querySelector('#submit').click()
   true`)
 
+// Not "the result is visible": utterances render as they are decoded, so the
+// panel appears long before the run is over -- and long before diarization has
+// produced a single speaker. The drop zone only reaches `done` at the end.
 const deadline = Date.now() + 600_000
 while (Date.now() < deadline) {
-  if (await evaluate('!document.querySelector("#result").hidden')) break
+  if (await evaluate('document.querySelector("#drop").dataset.state === "done"')) break
   await sleep(500)
 }
+await sleep(800)
 
 const found = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 400))
   const chips = [...document.querySelectorAll('#segments li .speaker')]
   chips[0]?.click()
-  await new Promise((r) => setTimeout(r, 400))
+  await settle()
+  const panel = document.querySelector('#aside')
+  const nameInput = panel.querySelector('input[type="text"]')
+
+  // The name field is a dropdown over the voices already known, and it says
+  // what saving under a given name would do -- join that person, or make a new
+  // one. That difference is otherwise invisible, and getting it wrong splits
+  // somebody's evidence across two prints.
+  const listId = nameInput?.getAttribute('list')
+  const known = listId ? [...document.querySelectorAll('#' + listId + ' option')].map((o) => o.value) : []
+  const describe = async (value) => {
+    nameInput.value = value
+    nameInput.dispatchEvent(new Event('input'))
+    await settle()
+    return [...panel.querySelectorAll('.aside__note')]
+      .map((n) => n.textContent)
+      .find((line) => /Adds this voice to|new voice/.test(line)) ?? ''
+  }
+  const joins = known.length ? await describe(known[0]) : ''
+  const fresh = await describe('Somebody Not In The Library')
+
   return {
     speakers: [...new Set(chips.map((c) => c.textContent))],
-    remembers: !document.querySelector('#aside')?.textContent.includes('created by hand'),
+    remembers: !panel.textContent.includes('created by hand'),
+    known,
+    joins,
+    fresh,
   }
 })()`)
 
@@ -106,6 +134,10 @@ const { data } = await send('Page.captureScreenshot', { format: 'png' })
 writeFileSync(shotPath, Buffer.from(data, 'base64'))
 console.log(`speakers: ${found.speakers.join(', ')}`)
 console.log(`panel offers to remember the voice: ${found.remembers}`)
+console.log(`name dropdown lists: ${found.known.join(', ') || '(nothing)'}`)
+console.log(`picking a known name says: ${found.joins || '(silent)'}`)
+console.log(`typing a new one says:     ${found.fresh || '(silent)'}`)
 console.log(`screenshot: ${shotPath}`)
 socket.close()
-process.exit(found.remembers ? 0 : 1)
+const ok = found.remembers && found.known.length > 0 && /Adds this voice to/.test(found.joins) && /new voice/.test(found.fresh)
+process.exit(ok ? 0 : 1)

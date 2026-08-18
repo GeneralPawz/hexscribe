@@ -491,6 +491,28 @@ const aside = await evaluate(`(async () => {
   const nameStarts = nameInput?.value
   const saysNoVoice = panel.textContent.includes('created by hand')
 
+  // A dropdown that still takes free text: the field is bound to a <datalist>
+  // holding the voices this machine already knows.
+  const listId = nameInput?.getAttribute('list')
+  // Concatenated, not a template literal: this whole block is one, and a nested
+  // backtick ends it early.
+  const known = listId ? [...document.querySelectorAll('#' + listId + ' option')] : []
+  const nameIsDropdown = Boolean(listId) && known.length > 0
+  const knownNames = known.map((o) => o.value)
+
+  // Typing an existing name must say it joins that person rather than making a
+  // near-duplicate of them -- which is the whole reason the list is here.
+  const describe = async (value) => {
+    nameInput.value = value
+    nameInput.dispatchEvent(new Event('input'))
+    await settle()
+    const shown = [...panel.querySelectorAll('.aside__note')].map((n) => n.textContent)
+    return shown.find((line) => /Adds this voice to|new voice/.test(line)) ?? ''
+  }
+  const effectForKnown = knownNames.length ? await describe(knownNames[0]) : ''
+  const effectForNew = await describe('Somebody Not In The Library')
+  nameInput.value = nameStarts
+
   // Renaming applies to every utterance of that speaker, not just this row.
   nameInput.value = 'Ada Lovelace'
   nameInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
@@ -504,7 +526,7 @@ const aside = await evaluate(`(async () => {
 
   return {
     hiddenAtRest, downloadOpened, downloadTitle, formats, hasFileName, oldButtonsGone,
-    movedOver, downloadSaid,
+    movedOver, downloadSaid, nameIsDropdown, knownNames, effectForKnown, effectForNew,
     closedByEscape, speakerOpened, speakerTitle, nameStarts, saysNoVoice, chipText,
     renamedRows, closedByButton: panel.hidden,
   }
@@ -525,6 +547,14 @@ check('clicking a speaker chip opens the same panel', aside.speakerOpened && asi
   aside.speakerTitle)
 check('showing the speaker it was opened on', /^(S\\d+|SPEAKER_)/.test(aside.nameStarts ?? ''), aside.nameStarts)
 check('and saying plainly when there is no voice to remember', aside.saysNoVoice)
+check('the name field offers the voices already known', aside.nameIsDropdown,
+  `${aside.knownNames.length} in the list: ${aside.knownNames.join(', ') || '(none)'}`)
+// This speaker was made by hand, so there is no print to store under any name.
+// The panel must not offer to remember it -- `panel-shot.mjs` covers the case
+// where there *is* a voice, which is where the offer means something.
+check('but promises nothing about remembering a speaker that has no voice',
+  !aside.effectForKnown && !aside.effectForNew,
+  `${aside.effectForKnown || '(silent)'} / ${aside.effectForNew || '(silent)'}`)
 check('renaming reaches every utterance of that speaker', aside.renamedRows >= 1 && aside.chipText === 'Ada Lovelace',
   `${aside.renamedRows} rows show "${aside.chipText}"`)
 check('the close button closes it', aside.closedByButton)

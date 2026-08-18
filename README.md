@@ -509,7 +509,22 @@ this file", so the same person is `SPEAKER_00` in one recording and `SPEAKER_02`
 in the next. Diarization can say *these utterances are one person*; nothing in
 the audio will ever say who. That comes from a human, once.
 
-Click a speaker chip, type a name, save. The name is stored against the
+Click a speaker chip, pick or type a name, save.
+
+The name field is a **dropdown over the voices this machine already knows**, and
+still takes free text for a new one. That is not a convenience: retyping an
+existing name slightly differently — `mara`, `Mara ` — does not fail, it quietly
+creates a *second* person and splits their evidence across two prints, which
+makes both worse at recognising them. Picking the existing entry is how you say
+"this is the same person", and enrolling then blends the prints. Each entry shows
+how many recordings and how much speech is behind it, so a choice between two
+similar names is made on evidence rather than on spelling, and the panel says
+which of the two things saving would do:
+
+> Adds this voice to Friedrich, who already has 3:48:21 across 5 recordings.
+
+It is an `<input list>` rather than a custom widget — a dropdown that still takes
+free text, with the keyboard behaviour already correct. The name is stored against the
 speaker's **voice print** — the duration-weighted centroid of their utterance
 embeddings — so the next recording of the same person is recognised without
 being told again. Measured, by enrolling from one half of a recording and

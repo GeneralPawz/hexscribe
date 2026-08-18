@@ -13,7 +13,7 @@
  * renames it here and nothing more.
  */
 
-import { enrollVoice, forgetVoice } from './api.js'
+import { enrollVoice, forgetVoice, getVoices } from './api.js'
 import { button, field, note, row, stat } from './aside.js'
 import { clock } from './dom.js'
 
@@ -37,12 +37,24 @@ export function speakerPanel({ speaker, transcript, onRename, onChanged }) {
       const seconds = segments.reduce((total, segment) => total + (segment.end - segment.start), 0)
       const voice = transcript.voices?.find((entry) => entry.speaker === speaker)
 
+      // An editable dropdown, not a plain field. The names that matter are the
+      // ones already in the voice library, and retyping one -- "mara", "Mara " --
+      // does not fail, it quietly creates a *second* person and splits the
+      // evidence for them across two prints. Picking the existing name is how
+      // you say "this is the same person", and enrolling then blends them.
+      //
+      // `<input list>` rather than a custom widget: a dropdown that still takes
+      // free text, with the keyboard behaviour already correct.
       const name = document.createElement('input')
       name.type = 'text'
       name.value = speaker
       name.className = 'aside__input'
       name.setAttribute('aria-label', 'Speaker name')
-      body.append(field('Name', name))
+      name.setAttribute('autocomplete', 'off')
+
+      const options = document.createElement('datalist')
+      options.id = `voices-${Math.random().toString(36).slice(2)}`
+      name.setAttribute('list', options.id)
 
       const remember = document.createElement('input')
       remember.type = 'checkbox'
@@ -50,7 +62,57 @@ export function speakerPanel({ speaker, transcript, onRename, onChanged }) {
       remember.disabled = !voice
       const rememberField = field('Remember this voice', remember)
       rememberField.classList.add('aside__field--inline')
-      body.append(rememberField)
+
+      // What saving would actually do. Otherwise the difference between adding
+      // to somebody and inventing a near-duplicate of them is invisible: both
+      // look like typing a name and pressing Save.
+      const effect = note('')
+      effect.hidden = true
+
+      body.append(field('Name', name), options, rememberField, effect)
+
+      let library = []
+      let live = true
+
+      function describeEffect() {
+        const wanted = name.value.trim()
+        const match = library.find((entry) => entry.name === wanted)
+        if (!voice || !remember.checked || !wanted) {
+          effect.hidden = true
+          return
+        }
+        effect.textContent = match
+          ? `Adds this voice to ${match.name}, who already has ${clock(match.seconds)} ` +
+            `across ${match.recordings} recording${match.recordings === 1 ? '' : 's'}.`
+          : `Remembers ${wanted} as a new voice.`
+        effect.className = 'aside__note'
+        effect.hidden = false
+      }
+
+      name.addEventListener('input', describeEffect)
+      remember.addEventListener('change', describeEffect)
+
+      getVoices()
+        .then((voices) => {
+          if (!live) return
+          library = voices ?? []
+          options.replaceChildren(
+            ...library.map((entry) => {
+              const option = document.createElement('option')
+              option.value = entry.name
+              // Shown beside the name in the dropdown, so choosing between two
+              // similar ones is done on evidence rather than on spelling.
+              option.label =
+                `${entry.recordings} recording${entry.recordings === 1 ? '' : 's'} · ${clock(entry.seconds)}`
+              return option
+            }),
+          )
+          describeEffect()
+        })
+        .catch(() => {
+          // No voice library on this server. The field stays what it was before
+          // — a plain one — rather than a dropdown that never opens.
+        })
 
       body.append(
         note(
@@ -127,6 +189,10 @@ export function speakerPanel({ speaker, transcript, onRename, onChanged }) {
       name.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') save.click()
       })
+
+      return () => {
+        live = false
+      }
 
       function show(message, tone) {
         status.textContent = message
