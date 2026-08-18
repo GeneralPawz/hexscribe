@@ -2,6 +2,7 @@
 
 import {
   deleteRun,
+  renameRun,
   detachAudio,
   getHealth,
   getVoices,
@@ -1193,6 +1194,16 @@ async function init() {
   rail = mountRail({
     onNew: newTranscript,
     onOpenRun: openRun,
+    onRenameRun: async (id, name) => {
+      try {
+        await renameRun(id, name)
+      } catch (error) {
+        setError(error.message)
+      }
+      await refreshRuns()
+      // The run panel is showing the old name, and the drop zone may be too.
+      if (runId === id) await openRun(id)
+    },
     onDeleteRuns: async (ids) => {
       // One at a time: the endpoint deletes one run, and a partial failure
       // should leave the ones that worked deleted rather than pretending none

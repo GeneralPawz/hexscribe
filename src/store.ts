@@ -307,12 +307,18 @@ export class StoreService extends Service {
         // `ON DELETE CASCADE` on run_segments and destroyed everything decoded
         // before the interruption -- at the exact moment somebody asked to
         // continue it. `ON CONFLICT DO UPDATE` leaves the row in place.
+        //
+        // `name` is missing from that update on purpose. A run is written twice
+        // -- once when it starts, once when it settles -- and both writes carry
+        // the filename the job was given. Somebody who renamed the run in
+        // between would have watched their name revert the moment it finished.
+        // Renaming is `renameRun`; nothing else may touch it.
         `INSERT INTO runs
          (id, name, source, path, source_path, status, created, finished, wall_ms, engine, model,
           language, task, diarize, merge, audio_seconds, segments, speakers, rtf, error)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name, source = excluded.source, path = excluded.path,
+           source = excluded.source, path = excluded.path,
            source_path = excluded.source_path, status = excluded.status,
            finished = excluded.finished, wall_ms = excluded.wall_ms, engine = excluded.engine,
            model = excluded.model, language = excluded.language, task = excluded.task,
@@ -405,6 +411,25 @@ export class StoreService extends Service {
     this.db.prepare('DELETE FROM run_segments WHERE run_id = ?').run(id)
     this.db.prepare('DELETE FROM audio WHERE run_id = ?').run(id)
     return result.changes > 0
+  }
+
+  /** Is this run still here? Cheaper than `getRun`, which loads a transcript. */
+  hasRun(id: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 AS one FROM runs WHERE id = ?').get(id))
+  }
+
+  /**
+   * Call a run something else.
+   *
+   * The name starts as the filename, which is what the machine knew and not
+   * always what the run is: `rec_0042.m4a` says nothing a month later. Only the
+   * label changes -- the file it was made from, and the path a disk run still
+   * plays from, are facts about the recording and stay as they are.
+   */
+  renameRun(id: string, name: string): boolean {
+    const trimmed = name.trim()
+    if (!trimmed) return false
+    return this.db.prepare('UPDATE runs SET name = ? WHERE id = ?').run(trimmed, id).changes > 0
   }
 
   /** Repoint a run at a file on disk, usually after dropping its stored audio. */

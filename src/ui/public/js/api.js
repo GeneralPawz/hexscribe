@@ -104,6 +104,11 @@ export async function resumeRun(id) {
   return postJson('/v1/runs/resume', { id })
 }
 
+/** Call a run something else. The recording it was made from is untouched. */
+export async function renameRun(id, name) {
+  return postJson('/v1/runs/rename', { id, name })
+}
+
 export async function deleteRun(id) {
   return postJson('/v1/runs/delete', { id })
 }

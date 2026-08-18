@@ -88,7 +88,7 @@ await client.audio.transcriptions.create({
 | `GET /health` | liveness, loaded engines, NPU status |
 | `GET /v1/runs` | recorded runs; `?id=` for one, with its transcript and log |
 | `GET /v1/runs/audio?id=` | the stored recording for a run |
-| `POST /v1/runs/{delete,audio/detach}` | forget a run, or its audio |
+| `POST /v1/runs/{rename,delete,audio/detach}` | call a run something else, forget it, or drop its audio |
 | `POST /v1/runs/resume` | continue an interrupted run from its last utterance |
 | `GET /v1/files?path=` | browse this machine for a recording (loopback only) |
 | `GET /v1/files/audio?path=` | stream one, with range requests |
@@ -322,6 +322,27 @@ file on disk anyway" is a judgement about *that* run and not a global setting.
 gesture the transcript uses to select utterances, and the bar that appears
 deletes the lot. It takes two clicks — the second says *Really delete 3?* —
 because these are transcripts that cost NPU time to make and there is no undo.
+
+**Right-click one row** and the menu is about that row, with its name as the
+heading: *Open*, *Rename*, *Delete*. Renaming happens in the row itself, under
+the same rules as correcting an utterance — Enter commits, Escape puts it back,
+clicking away keeps what was typed — and double-click starts it, which is what a
+person tries first. Only the label changes; the file the run was made from, and
+the path a disk run still plays from, are facts about the recording. *Delete*
+asks in a second menu that names the run, the same two-press bargain the
+selection bar makes.
+
+Both of those can be done to a run that is *still decoding*, which is where the
+interesting failures were. The run row is written twice — once when the job
+starts, once when it settles — and the settle write is an upsert carrying the
+filename the job began with, so a rename made in between was silently reverted
+minutes later, and a delete brought the row back from the dead. The name is now
+excluded from that write (renaming is `renameRun`, and nothing else may touch
+it), and settling refuses to record a run that is no longer there. Deleting a
+running one is still not offered: the menu item reads *Delete — still running*
+and is disabled, because taking the row would leave the NPU working for an hour
+with nowhere to put the result, and stopping a job is a thing this app cannot
+yet do. Saying so beats a delete that only half happens.
 
 **Settings** is a modal, and a `<dialog>` rather than a div and a scrim: the
 browser already knows how to trap focus, close on Escape and paint a backdrop.

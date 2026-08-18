@@ -264,6 +264,24 @@ test('a run can be repointed from stored audio to a file on disk', async (t) => 
   assert.equal(found?.has_audio, 0)
 })
 
+test('a run can be called something other than the filename it came from', async (t) => {
+  // `rec_0042.m4a` is what the machine knew. A month later it says nothing, and
+  // the name is the only thing in the rail wide enough to read.
+  const app = await store()
+  t.after(app.dispose)
+
+  app.ctx.store.saveRun({ ...run('a'), name: 'rec_0042.m4a', source: 'disk', path: 'D:\\audio\\rec_0042.m4a' }, transcript())
+
+  assert.equal(app.ctx.store.renameRun('a', '  Kitchen argument  '), true)
+  const found = app.ctx.store.getRun('a')
+  assert.equal(found?.name, 'Kitchen argument', 'trimmed, because a trailing space is a typo')
+  assert.equal(found?.path, 'D:\\audio\\rec_0042.m4a', 'the recording it plays from is untouched')
+
+  assert.equal(app.ctx.store.renameRun('a', '   '), false, 'and a run cannot be called nothing')
+  assert.equal(app.ctx.store.getRun('a')?.name, 'Kitchen argument')
+  assert.equal(app.ctx.store.renameRun('nobody', 'Anything'), false, 'nor can a run that is not there')
+})
+
 // --- streaming, and picking up where a crash left off ------------------
 
 test('utterances are stored as they are decoded, before there is a transcript', async (t) => {

@@ -921,6 +921,28 @@ body {
   color: var(--err);
 }
 
+/* Renaming happens in the row, at the size and position the name already had,
+   so the list does not jump under the pointer when an edit starts. */
+.rail__run.is-renaming {
+  cursor: default;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.rail__rename {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--accent);
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.rail__rename:focus {
+  outline: none;
+}
+
 .rail__run-name,
 .rail__run-meta {
   display: block;

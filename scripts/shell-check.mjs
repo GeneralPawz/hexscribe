@@ -177,6 +177,61 @@ check('and marking it in the rail', opened.marked === 1)
 check('with playback, because the audio was kept', opened.player)
 await shoot(shotPath.replace(/\.png$/, '-run.png'))
 
+// --- one run, right-clicked ---
+// Renaming first, deleting last: the delete has to be the end of this section
+// because it takes the row the rest of it is about.
+const menu = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 350))
+  const row = () => document.querySelector('.rail__run')
+  const before = row().querySelector('.rail__run-name').textContent
+  row().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 200 }))
+  await settle()
+  const strip = (text) => text.replace(/^[\u2713\s]+/, '').trim()
+  const heading = document.querySelector('.menu .menu__heading')?.textContent
+  const items = [...document.querySelectorAll('.menu .menu__item')].map((b) => strip(b.textContent))
+
+  // Rename: the row becomes a field with the name selected, Enter commits.
+  ;[...document.querySelectorAll('.menu .menu__item')].find((b) => strip(b.textContent) === 'Rename').click()
+  await settle()
+  const input = document.querySelector('.rail__rename')
+  const armed = Boolean(input) && input.value === before
+  input.value = 'Kitchen argument'
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await settle()
+  await settle()
+  const renamed = row().querySelector('.rail__run-name')?.textContent
+  const stored = (await (await fetch('/v1/runs')).json()).runs.find((r) => r.name === 'Kitchen argument')
+
+  return { before, heading, items, armed, renamed, stored: Boolean(stored), id: stored?.id, path: stored?.path }
+})()`)
+check('right-clicking one run names it in the heading', menu.heading === menu.before,
+  `${menu.heading} / ${menu.before}`)
+check('and offers what can be done to that one', menu.items.join(', ') === 'Open, Rename, Delete',
+  menu.items.join(', '))
+check('Rename opens a field on the row itself', menu.armed)
+check('and typing a new name changes the row', menu.renamed === 'Kitchen argument', menu.renamed)
+check('the server keeps the new name', menu.stored)
+
+// Escape puts a name back, which is the half of an editor that is easy to skip.
+const cancelled = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 350))
+  const row = () => document.querySelector('.rail__run')
+  row().dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+  await settle()
+  const input = document.querySelector('.rail__rename')
+  input.value = 'Something else entirely'
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await settle()
+  await settle()
+  return {
+    name: row().querySelector('.rail__run-name')?.textContent,
+    stored: (await (await fetch('/v1/runs')).json()).runs[0]?.name,
+  }
+})()`)
+check('double-click renames too, and Escape puts it back',
+  cancelled.name === 'Kitchen argument' && cancelled.stored === 'Kitchen argument',
+  `${cancelled.name} / ${cancelled.stored}`)
+
 // --- settings ---
 const settings = await evaluate(`(async () => {
   document.querySelector('#rail-settings').click()
@@ -292,6 +347,62 @@ const finished = await (async () => {
 check('and it transcribes', finished.segments > 0, `${finished.segments} utterances`)
 check('recorded as a disk run that remembers its file', finished.source === 'disk' && Boolean(finished.path),
   finished.path ?? '(none)')
+
+// A reload while the disk run above is still decoding. That is the only way the
+// rail lists a job as running -- a fresh page asks the database what is going on
+// rather than only what has finished -- and it is what somebody sees after
+// closing the tab on an hour-long file and coming back to it.
+await send('Page.navigate', { url: uiUrl })
+await sleep(2500)
+await evaluate(`window.__errors = []
+  addEventListener('error', (e) => __errors.push(String(e.message)))
+  addEventListener('unhandledrejection', (e) => __errors.push(String(e.reason)))
+  true`)
+
+// --- deleting the run that was right-clicked ---
+// Last, because it takes the row every check above was about. Two presses: the
+// menu asks, and only then does it delete.
+const deleted = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 350))
+  const strip = (text) => text.replace(/^[\u2713\s]+/, '').trim()
+  const before = (await (await fetch('/v1/runs')).json()).runs.length
+  const rows = [...document.querySelectorAll('.rail__run')]
+
+  // The disk run started above is still decoding an hour of audio. Deleting it
+  // would take the row and leave the NPU working on it, so the menu must not
+  // offer to -- and must say why rather than greying out in silence.
+  const live = rows.find((r) => r.querySelector('.rail__run-meta')?.textContent === 'running\u2026')
+  let running = null
+  if (live) {
+    live.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 260 }))
+    await settle()
+    const item = [...document.querySelectorAll('.menu .menu__item')].find((b) => b.textContent.includes('Delete'))
+    running = { label: strip(item.textContent), disabled: item.disabled }
+    document.querySelectorAll('.menu').forEach((m) => m.remove())
+    await settle()
+  }
+
+  const target = rows.find((r) => r.querySelector('.rail__run-name')?.textContent === 'Kitchen argument')
+  target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 120, clientY: 200 }))
+  await settle()
+  ;[...document.querySelectorAll('.menu .menu__item')].find((b) => strip(b.textContent) === 'Delete').click()
+  await settle()
+  const asked = document.querySelector('.menu .menu__heading')?.textContent
+  const choices = [...document.querySelectorAll('.menu .menu__item')].map((b) => strip(b.textContent))
+  const still = (await (await fetch('/v1/runs')).json()).runs.length
+  ;[...document.querySelectorAll('.menu .menu__item')].find((b) => strip(b.textContent) === 'Delete it').click()
+  for (let i = 0; i < 10; i++) await settle()
+  const after = (await (await fetch('/v1/runs')).json()).runs
+  return { before, asked, choices, still, running, after: after.length, names: after.map((r) => r.name) }
+})()`)
+check('a run still decoding cannot be deleted, and the label says why',
+  Boolean(deleted.running) && deleted.running.disabled && /still running/.test(deleted.running.label),
+  deleted.running ? `${deleted.running.label} (disabled: ${deleted.running.disabled})` : 'nothing was running')
+check('Delete asks before it deletes', /^Delete Kitchen argument\?$/.test(deleted.asked ?? ''), deleted.asked)
+check('and offers a way out', deleted.choices.join(', ') === 'Delete it, Keep it', deleted.choices.join(', '))
+check('asking is not deleting', deleted.still === deleted.before, `${deleted.before} \u2192 ${deleted.still}`)
+check('confirming is', deleted.after === deleted.before - 1 && !deleted.names.includes('Kitchen argument'),
+  `${deleted.before} \u2192 ${deleted.after}`)
 
 const errors = await evaluate('window.__errors')
 check('no page errors', errors.length === 0, errors.join(' | '))

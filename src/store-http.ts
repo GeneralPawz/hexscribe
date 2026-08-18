@@ -190,6 +190,14 @@ export function apply(ctx: Context) {
     return Response.json({ id: job.id, status: job.status, resumeFrom, kept: decoded.length })
   })
 
+  ctx.serve.route('POST', '/v1/runs/rename', async (request) => {
+    const { id, name } = await body(request)
+    if (typeof id !== 'string') throw badRequest('Rename needs an `id`.')
+    if (typeof name !== 'string' || !name.trim()) throw badRequest('A run needs a name.')
+    if (!ctx.store.renameRun(id, name)) throw notFound(`No run ${id}.`)
+    return Response.json({ renamed: true, name: name.trim() })
+  })
+
   ctx.serve.route('POST', '/v1/runs/delete', async (request) => {
     const { id } = await body(request)
     if (typeof id !== 'string') throw badRequest('Delete needs an `id`.')

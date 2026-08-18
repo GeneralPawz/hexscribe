@@ -89,6 +89,14 @@ export function apply(ctx: Context) {
   ctx.on('job/settled', async (job: Job) => {
     const finished = job.finished ?? Date.now()
     try {
+      // Deleted while it was still decoding. The write below is an upsert, so
+      // without this the run would reappear the moment it finished -- a delete
+      // that undoes itself a few minutes later is worse than one that refuses.
+      if (!ctx.store.hasRun(job.id)) {
+        ctx.logger?.info?.(`run ${job.id} was deleted while it ran; nothing recorded`)
+        return
+      }
+
       // A resumed run's engine transcript holds only the part it decoded. What
       // was stored before the interruption is still in `run_segments`, so the
       // two are joined here — this is the one place that knows about both.
