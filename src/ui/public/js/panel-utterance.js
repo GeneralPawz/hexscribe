@@ -10,14 +10,19 @@
  * merging the paragraph above does not quietly move the comment onto a
  * different sentence.
  *
- * The tag field is a dropdown over the vocabulary already in use, and that is
- * the important part: retyping `pricing` as `Pricing` does not fail, it makes a
+ * The tag field suggests the vocabulary already in use, and that is the
+ * important part: retyping `pricing` as `Pricing` does not fail, it makes a
  * second tag that finds half the evidence. Picking an existing one is how you
  * say "the same thing as before".
+ *
+ * `pricing/discounts` is one tag with a level in it. Typing a `/` is the whole
+ * of the syntax, and the suggestions follow you into the branch.
  */
 
 import { field, note, row, stat } from './aside.js'
 import { clock } from './dom.js'
+import { attachSuggest } from './suggest.js'
+import { normaliseTag, tagLeaf } from './annotations.js'
 
 /**
  * @param {object} options
@@ -128,7 +133,15 @@ export function utterancePanel({
           const chip = document.createElement('button')
           chip.type = 'button'
           chip.className = 'tag tag--removable'
-          chip.textContent = tag
+          // The branch above it in small, the level itself in full: a column of
+          // chips reading `pricing/…` down the left is a column you cannot scan.
+          if (tag.includes('/')) {
+            const branch = document.createElement('span')
+            branch.className = 'tag__branch'
+            branch.textContent = `${tag.slice(0, tag.lastIndexOf('/'))}/`
+            chip.append(branch)
+          }
+          chip.append(document.createTextNode(tagLeaf(tag)))
           chip.title = `Remove ${tag}`
           chip.dataset.tag = tag
           chip.addEventListener('click', async () => {
@@ -150,26 +163,12 @@ export function utterancePanel({
       const input = document.createElement('input')
       input.type = 'text'
       input.className = 'aside__input'
-      input.placeholder = 'Add a tag'
+      input.placeholder = 'Add a tag, or a branch/sublevel'
       input.setAttribute('aria-label', 'Add a tag')
       input.setAttribute('autocomplete', 'off')
 
-      const options = document.createElement('datalist')
-      options.id = `tags-${Math.random().toString(36).slice(2)}`
-      input.setAttribute('list', options.id)
-      options.replaceChildren(
-        ...library.map((entry) => {
-          const option = document.createElement('option')
-          option.value = entry.name
-          // How much is already filed under it, so choosing between two similar
-          // words is done on evidence rather than on spelling.
-          option.label = `${entry.uses} utterance${entry.uses === 1 ? '' : 's'}`
-          return option
-        }),
-      )
-
-      const add = async () => {
-        const wanted = input.value.trim()
+      const add = async (value) => {
+        const wanted = normaliseTag(value ?? input.value)
         if (!wanted) return
         if (tags.includes(wanted)) {
           input.value = ''
@@ -185,13 +184,19 @@ export function utterancePanel({
           say(error.message, 'warn')
         }
       }
-      input.addEventListener('keydown', (event) => {
-        if (event.key !== 'Enter') return
-        event.preventDefault()
-        void add()
+
+      // Its own list rather than a `<datalist>`: the browser decides when to
+      // show that one, matches by prefix only, and keeps offering entries that
+      // no longer match. This one narrows as you type.
+      body.append(field('Tags', input))
+      attachSuggest({
+        input,
+        names: () => library.map((entry) => entry.name),
+        exclude: () => tags,
+        onPick: (name) => void add(name),
       })
 
-      body.append(field('Tags', input), options, chips, status)
+      body.append(chips, status)
     },
   }
 }

@@ -10,10 +10,16 @@
  *
  * Picking one lists the lines carrying it, on the right, each of them a click
  * from being played.
+ *
+ * Tags nest — `pricing/discounts` — and the list is a tree because that is the
+ * only way the levels are worth having: clicking `pricing` answers with
+ * everything under it, and clicking the sublevel narrows to exactly that. A
+ * level nobody tagged directly is still shown, because the first sublevel
+ * somebody invents would otherwise make its own parent unreachable.
  */
 
 import { panes } from './drawer.js'
-import { rowsWithTag, tagsInRun } from './annotations.js'
+import { rowsWithTag, tagTree, tagsInRun } from './annotations.js'
 import { utteranceList } from './utterance-list.js'
 import { clock } from './dom.js'
 
@@ -35,6 +41,8 @@ export function tagsTab({
   const here = tagsInRun(annotations.tags)
   const mine = new Set(here.map((entry) => entry.name))
   const elsewhere = library.filter((entry) => !mine.has(entry.name))
+  // Note the two lists count different things -- utterances here, runs there --
+  // which is why each group is given its own way of describing an entry.
 
   return {
     id: 'tags',
@@ -56,12 +64,17 @@ export function tagsTab({
           return
         }
 
+        left.append(branch(tagTree(entries), describe, 0))
+      }
+
+      /** One level of the tree, and its own levels under it. */
+      function branch(nodes, describe, depth) {
         const list = document.createElement('ul')
-        list.className = 'taglist'
-        for (const entry of entries) {
+        list.className = `taglist${depth ? ' taglist--nested' : ''}`
+        for (const entry of nodes) {
           const item = document.createElement('li')
 
-          if (entry.name === renaming) {
+          if (entry.path === renaming) {
             // Typed over in place, under the same rules as every other rename
             // on this page: Enter commits, Escape puts it back, clicking away
             // keeps what was typed. Renaming onto a name that already exists
@@ -69,14 +82,14 @@ export function tagsTab({
             const input = document.createElement('input')
             input.type = 'text'
             input.className = 'taglist__input'
-            input.value = entry.name
-            input.setAttribute('aria-label', `Rename ${entry.name}`)
+            input.value = entry.path
+            input.setAttribute('aria-label', `Rename ${entry.path}`)
 
             let done = false
             const finish = (value) => {
               if (done) return
               done = true
-              onRename?.(entry.name, value === null ? null : value.trim())
+              onRename?.(entry.path, value === null ? null : value.trim())
             }
             input.addEventListener('keydown', (event) => {
               if (event.key === 'Enter') {
@@ -100,8 +113,11 @@ export function tagsTab({
 
           const button = document.createElement('button')
           button.type = 'button'
-          button.className = `tag tag--pick${entry.name === focus ? ' is-active' : ''}`
-          button.dataset.tag = entry.name
+          // A level nobody filed anything at directly is a place rather than a
+          // choice somebody made, and it says so by being quieter.
+          button.className =
+            `tag tag--pick${entry.path === focus ? ' is-active' : ''}${entry.own ? '' : ' tag--branch'}`
+          button.dataset.tag = entry.path
           button.textContent = entry.name
 
           const count = document.createElement('span')
@@ -109,33 +125,35 @@ export function tagsTab({
           count.textContent = describe(entry)
           button.append(count)
 
-          button.addEventListener('click', () => onFocus(entry.name))
+          button.addEventListener('click', () => onFocus(entry.path))
           if (onMenu) {
             button.addEventListener('contextmenu', (event) => {
               if (event.shiftKey) return
               event.preventDefault()
-              onMenu(entry.name, event)
+              onMenu(entry.path, event)
             })
           }
           item.append(button)
+          if (entry.children.length) item.append(branch(entry.children, describe, depth + 1))
           list.append(item)
         }
-        left.append(list)
+        return list
       }
 
       group(
         'In this recording',
         here,
-        (entry) => String(entry.uses),
+        // What is under this level, which is what clicking it will answer with.
+        (entry) => String(entry.total),
         'Nothing tagged yet. Click a line to start.',
       )
       group(
         'Everywhere else',
-        elsewhere,
+        elsewhere.map((entry) => ({ name: entry.name, uses: entry.runs })),
         // Runs rather than utterances: what matters about a tag you have not
         // used here is how established it is, not how often it was repeated in
         // one conversation.
-        (entry) => `${entry.runs} run${entry.runs === 1 ? '' : 's'}`,
+        (entry) => `${entry.total} run${entry.total === 1 ? '' : 's'}`,
         'No other tags yet.',
       )
 

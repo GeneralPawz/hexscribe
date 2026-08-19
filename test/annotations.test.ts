@@ -289,3 +289,60 @@ test('moving an annotation nowhere is not a move', async (t) => {
   assert.equal(app.ctx.store.moveAnnotations('a', 10, 10), false)
   assert.equal(app.ctx.store.annotations('a').notes[0].body, 'unchanged')
 })
+
+// --- nested tags --------------------------------------------------------
+
+test('a branch answers for everything filed under it', async (t) => {
+  const app = await store()
+  t.after(app.dispose)
+  app.ctx.store.saveRun(run('a'), transcript())
+
+  app.ctx.store.tagUtterance('a', 0, 'pricing')
+  app.ctx.store.tagUtterance('a', 10, ' pricing / discounts ')
+
+  assert.deepEqual(
+    app.ctx.store.annotations('a').tags.map((entry) => entry.tag),
+    ['pricing', 'pricing/discounts'],
+    'tidied on the way in: a trailing space is a typo, not a different tag',
+  )
+  assert.equal(app.ctx.store.taggedWith('pricing').length, 2, 'the branch finds its sublevel')
+  assert.equal(app.ctx.store.taggedWith('pricing/discounts').length, 1, 'the leaf is only itself')
+  assert.equal(app.ctx.store.taggedWith('pric').length, 0, 'and half a word is not a branch')
+})
+
+test('renaming a branch takes its sublevels with it', async (t) => {
+  const app = await store()
+  t.after(app.dispose)
+  app.ctx.store.saveRun(run('a'), transcript())
+
+  app.ctx.store.tagUtterance('a', 0, 'price')
+  app.ctx.store.tagUtterance('a', 10, 'price/discounts')
+  assert.equal(app.ctx.store.renameTag('price', 'pricing'), true)
+
+  assert.deepEqual(
+    app.ctx.store.listTags().map((entry) => entry.name).sort(),
+    ['pricing', 'pricing/discounts'],
+    'one idea moved, not half of one',
+  )
+  assert.equal(app.ctx.store.taggedWith('pricing').length, 2)
+})
+
+test('forgetting a branch forgets what was under it', async (t) => {
+  // Leaving the sublevels behind would leave a branch nobody can reach from the
+  // list, which is a worse kind of gone than gone.
+  const app = await store()
+  t.after(app.dispose)
+  app.ctx.store.saveRun(run('a'), transcript())
+
+  app.ctx.store.tagUtterance('a', 0, 'pricing')
+  app.ctx.store.tagUtterance('a', 10, 'pricing/discounts')
+  app.ctx.store.tagUtterance('a', 10, 'staffing')
+
+  assert.equal(app.ctx.store.deleteTag('pricing'), true)
+  assert.deepEqual(app.ctx.store.listTags().map((entry) => entry.name), ['staffing'])
+  assert.deepEqual(
+    app.ctx.store.annotations('a').tags.map((entry) => entry.tag),
+    ['staffing'],
+    'and the attachments went with them',
+  )
+})

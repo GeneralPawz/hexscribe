@@ -151,7 +151,7 @@ export function renderSegments(list, transcript, onSeek, actions = {}) {
   const colours = speakerColours(transcript)
   const {
     onContext, onSelect, onEdit, onBeginEdit, onSpeaker, onSpeakerMenu,
-    onOpen, onSectionCommit, onSectionMenu,
+    onOpen, onSectionCommit, onSectionMenu, onInsertSection,
     sections = [], marks = new Map(), draftSection = null,
     selected = new Set(), editing = null,
   } = actions
@@ -177,6 +177,25 @@ export function renderSegments(list, transcript, onSeek, actions = {}) {
           onCommit: onSectionCommit,
           onMenu: onSectionMenu,
         })
+      }
+
+      // A section starts between two lines, so the way to start one is on the
+      // line between them. It appears on hover rather than sitting there: a
+      // transcript with a button on every row is a control panel, and this is
+      // meant to be read.
+      if (onInsertSection && !section && !drafting) {
+        const insert = document.createElement('button')
+        insert.type = 'button'
+        insert.className = 'insert'
+        insert.title = 'Start a section here'
+        insert.setAttribute('aria-label', `Start a section at ${clock(segment.start)}`)
+        insert.textContent = '+'
+        insert.addEventListener('click', (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          onInsertSection(position)
+        })
+        item.append(insert)
       }
 
       const time = document.createElement('time')
@@ -346,8 +365,8 @@ export function markActive(list, index) {
 }
 
 export function mountResult(transcript, wallSeconds, baseName, onSeek, actions) {
-  $('#summary').textContent = summarize(transcript, wallSeconds)
-
+  // The summary moved into the aside: it is read once and then sits above the
+  // document forever, and it is a fact about the run rather than part of it.
   const damage = $('#damage')
   const note = damageNote(transcript)
   damage.textContent = note

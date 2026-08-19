@@ -444,10 +444,14 @@ const aside = await evaluate(`(async () => {
   const hiddenAtRest = panel.hidden
 
   // --- the download panel, from the single Download button ---
-  document.querySelector('#download').click()
+  document.querySelector('#result').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 400));
+  [...document.querySelectorAll('.aside__tab')].find((b) => b.textContent === 'Download').click()
   await settle()
   const downloadOpened = !panel.hidden && panel.classList.contains('is-open')
-  const downloadTitle = panel.querySelector('.aside__title')?.textContent
+  // The export options are a tab now rather than a panel of their own, so what
+  // identifies them is which tab is up -- the title is the run.
+  const downloadTitle = panel.querySelector('.aside__tab.is-active')?.textContent
   const formats = [...panel.querySelectorAll('option')].map((o) => o.value)
   const hasFileName = [...panel.querySelectorAll('.aside__field')]
     .some((f) => f.textContent.includes('File name'))
@@ -456,11 +460,14 @@ const aside = await evaluate(`(async () => {
 
   // Actually download: the panel opening proves nothing about whether the
   // configured export reaches the server and comes back.
-  const select = panel.querySelector('select')
+  // Inside the body, not the whole panel: there is a *tab* called Download now,
+  // and it comes first in the document -- clicking it downloads nothing.
+  const contents = panel.querySelector('.aside__body')
+  const select = contents.querySelector('select')
   select.value = 'srt'
-  const fileField = [...panel.querySelectorAll('input[type="text"]')].pop()
+  const fileField = [...contents.querySelectorAll('input[type="text"]')].pop()
   fileField.value = 'from-the-panel'
-  ;[...panel.querySelectorAll('button')].find((b) => b.textContent === 'Download')?.click()
+  ;[...contents.querySelectorAll('button')].find((b) => b.textContent === 'Download')?.click()
   await new Promise((r) => setTimeout(r, 900))
   const downloadSaid = panel.querySelector('.aside__note--ok')?.textContent ?? ''
 
@@ -533,8 +540,8 @@ const aside = await evaluate(`(async () => {
 })()`)
 
 check('the panel is not there until something asks for it', aside.hiddenAtRest)
-check('one Download button, not four', aside.oldButtonsGone)
-check('and it opens the panel', aside.downloadOpened && aside.downloadTitle === 'Download',
+check('no download buttons littering the card', aside.oldButtonsGone)
+check('and the card opens it as a tab', aside.downloadOpened && aside.downloadTitle === 'Download',
   aside.downloadTitle)
 check('offering every format', ['srt', 'vtt', 'text', 'json'].every((f) => aside.formats.includes(f)),
   aside.formats.join(', '))

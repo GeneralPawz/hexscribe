@@ -127,6 +127,69 @@ check('there is a transcript to mark up', ready.rows > 2, `${ready.rows} utteran
 check('the timeline stays out of the way until there is a section', ready.timelineHidden)
 check('and the drawer starts collapsed', !ready.drawerOpen)
 
+// --- the card knows about itself ---
+const card = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 400))
+  const bar = document.querySelector('.result-bar')
+  const controls = [...bar.querySelectorAll('button')].map((b) => b.getAttribute('aria-label'))
+  const summaryGone = !document.querySelector('#summary')
+
+  const box = document.querySelector('#result').getBoundingClientRect()
+  document.querySelector('#result').dispatchEvent(
+    new MouseEvent('click', { bubbles: true, clientX: box.right - 40, clientY: box.top + 8 }))
+  await settle()
+  await settle()
+  const aside = document.querySelector('#aside')
+  const tabs = [...aside.querySelectorAll('.aside__tab')].map((b) => b.textContent)
+  const facts = [...aside.querySelectorAll('.aside__stat')].map((s) => s.textContent)
+
+  // The download options are a tab now, not a button on the card.
+  ;[...aside.querySelectorAll('.aside__tab')].find((b) => b.textContent === 'Download').click()
+  await settle()
+  const download = Boolean(aside.querySelector('select'))
+  aside.querySelector('.aside__close').click()
+  await settle()
+
+  return { controls, summaryGone, tabs, facts, download }
+})()`)
+
+check('the card keeps only what is done *to* the transcript',
+  card.controls.join(', ') === 'Undo, Copy text', card.controls.join(', '))
+check('and the line of statistics is off it', card.summaryGone)
+check('clicking the card opens what is known about the run',
+  card.tabs.join(' | ') === 'Info | Speakers (3) | Download', card.tabs.join(' | '))
+check('with the numbers that used to sit above the transcript',
+  card.facts.some((fact) => /Utterances/.test(fact)) && card.facts.some((fact) => /Took/.test(fact)),
+  card.facts.slice(0, 4).join(' · '))
+check('and the download options as a tab', card.download)
+
+// --- a section, from the line between two utterances ---
+const inserted = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 400))
+  const rows = [...document.querySelectorAll('#segments li')]
+  // Hidden until the row is under the pointer; the check reads the style
+  // rather than trusting that dispatching a mouseover paints anything.
+  const plus = rows[2].querySelector('.insert')
+  const hidden = plus ? getComputedStyle(plus).opacity : 'missing'
+  // Measured before it is clicked: clicking re-renders the row, and a detached
+  // element reports a rectangle at the origin -- which would pass a >= test by
+  // accident and fail this one by accident, depending on which way it is written.
+  const left = plus ? Math.round(plus.getBoundingClientRect().left) : null
+  const listLeft = Math.round(document.querySelector('#segments').getBoundingClientRect().left)
+  plus?.click()
+  await settle()
+  const opened = Boolean(document.querySelector('.section__input'))
+  document.querySelector('.section__input')?.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await settle()
+  return { hidden, opened, left, listLeft }
+})()`)
+check('every line offers a + on the line above it', inserted.opened)
+check('which is out of the way until the row is hovered', inserted.hidden === '0', inserted.hidden)
+check('and inside the list, which scrolls and would clip it',
+  inserted.left !== null && inserted.left >= inserted.listLeft,
+  `+ at ${inserted.left}, list starts at ${inserted.listLeft}`)
+
 // --- a section ---
 const sectioned = await evaluate(`(async () => {
   const settle = () => new Promise((r) => setTimeout(r, 400))
@@ -200,9 +263,13 @@ const annotated = await evaluate(`(async () => {
   await settle()
   await settle()
 
-  const tagField = aside.querySelector('input[list]')
+  const tagField = aside.querySelector('input[aria-label="Add a tag"]')
   const add = async (name) => {
     tagField.value = name
+    tagField.dispatchEvent(new Event('input'))
+    await settle()
+    // Enter takes the highlighted suggestion, or exactly what was typed when
+    // there is none -- which is the only way a new sublevel can be created.
     tagField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     await settle()
     await settle()
@@ -211,6 +278,8 @@ const annotated = await evaluate(`(async () => {
   await add('follow up')
   // The same line, a second time: tagging twice must not make two of them.
   await add('pricing')
+  // And a sublevel, which is one tag with a level in it rather than two tags.
+  await add('pricing/discounts')
 
   const chips = [...aside.querySelectorAll('.tag--removable')].map((c) => c.textContent.trim())
   const annotations = await (await fetch('/v1/annotations?run=' + encodeURIComponent(
@@ -230,9 +299,10 @@ check('clicking a line opens it', annotated.title === 'Utterance', annotated.tit
 check('showing what was said there', Boolean(annotated.quote), (annotated.quote ?? '').slice(0, 48))
 check('the comment reaches the database', annotated.notes.length === 1 && /hesitated/.test(annotated.notes[0].body),
   JSON.stringify(annotated.notes))
-check('both tags stick, and tagging twice is once', annotated.chips.join(', ') === 'follow up, pricing',
-  annotated.chips.join(', '))
-check('the server holds two tags for that line', annotated.tags.length === 2, JSON.stringify(annotated.tags))
+check('the tags stick, and tagging twice is once',
+  annotated.chips.join(', ') === 'follow up, pricing, pricing/discounts', annotated.chips.join(', '))
+check('the server holds three tags for that line', annotated.tags.length === 3,
+  annotated.tags.map((entry) => entry.tag).join(', '))
 check('and the line is marked in the transcript', annotated.marked === 1, `${annotated.marked} marked`)
 
 // --- the drawer ---
@@ -245,9 +315,18 @@ const drawer = await evaluate(`(async () => {
   const groups = [...document.querySelectorAll('.drawer__group')].map((g) => g.textContent)
   const tags = [...document.querySelectorAll('.taglist .tag')].map((t) => t.dataset.tag)
 
+  const paths = [...document.querySelectorAll('.taglist .tag')].map((b) => b.dataset.tag)
+  const nested = document.querySelectorAll('.taglist--nested .tag').length
+
+  // The branch answers with everything under it...
   document.querySelector('.taglist .tag[data-tag="pricing"]').click()
   await settle()
   const found = [...document.querySelectorAll('.drawer__pane--detail .utterances__row')].length
+
+  // ...and the sublevel with only its own.
+  document.querySelector('.taglist .tag[data-tag="pricing/discounts"]').click()
+  await settle()
+  const underSublevel = [...document.querySelectorAll('.drawer__pane--detail .utterances__row')].length
 
   // And the speakers tab, which used to be a panel in the aside.
   ;[...document.querySelectorAll('.drawer__tab')].find((t) => t.textContent.startsWith('Speakers')).click()
@@ -259,7 +338,7 @@ const drawer = await evaluate(`(async () => {
 
   return {
     open: document.body.classList.contains('has-drawer'),
-    tabs, groups, tags, found, speakers, said,
+    tabs, groups, tags, found, speakers, said, paths, nested, underSublevel,
   }
 })()`)
 
@@ -317,7 +396,12 @@ check('tags are split into this recording and the rest',
   drawer.groups.join(' | ') === 'In this recording | Everywhere else', drawer.groups.join(' | '))
 check('the tags used here are listed', drawer.tags.includes('pricing') && drawer.tags.includes('follow up'),
   drawer.tags.join(', '))
-check('picking one lists the lines carrying it', drawer.found === 1, `${drawer.found} utterances`)
+check('the sublevel is shown under its branch', drawer.nested >= 1 &&
+  drawer.paths.includes('pricing') && drawer.paths.includes('pricing/discounts'),
+  drawer.paths.join(', '))
+check('picking a branch lists everything under it', drawer.found === 1, `${drawer.found} utterances`)
+check('and picking the sublevel narrows to its own',
+  drawer.underSublevel === 1, `${drawer.underSublevel} utterances`)
 check('the speakers tab lists the speakers', drawer.speakers >= 1, `${drawer.speakers} speakers`)
 check('and one of them can be read line by line', drawer.said >= 1, `${drawer.said} utterances`)
 
@@ -362,7 +446,8 @@ const survived = await evaluate(`(async () => {
 check('a merge does not move the comment onto another line',
   survived.marked === 0 && /hesitated/.test(survived.comment ?? ''),
   `row ${survived.marked} · ${JSON.stringify(survived.comment)}`)
-check('and the tags came with it', survived.tags.join(', ') === 'follow up, pricing', survived.tags.join(', '))
+check('and the tags came with it', survived.tags.join(', ') === 'follow up, pricing, pricing/discounts',
+  survived.tags.join(', '))
 check('which is the line that absorbed it', (survived.text ?? '').includes(survived.before ?? '\u0000'),
   (survived.text ?? '').slice(0, 60))
 

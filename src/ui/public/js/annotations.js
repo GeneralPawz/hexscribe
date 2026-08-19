@@ -88,9 +88,93 @@ export function tagsInRun(tags) {
     .sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name))
 }
 
-/** Every utterance carrying a tag, as row indices into the transcript. */
+/**
+ * One tag, tidied. `Pricing / Discounts ` is `Pricing/Discounts`.
+ *
+ * Must agree with `normaliseTag` in `store.ts`: the client decides what the
+ * name is before the server is asked to store it.
+ */
+export function normaliseTag(tag) {
+  return String(tag)
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('/')
+}
+
+/**
+ * Is this tag the one asked for, or filed under it?
+ *
+ * The whole point of `pricing/discounts` is that asking for `pricing` finds it.
+ * A branch that answered only for itself would be a label with nothing behind
+ * it, and nobody would file anything under one twice.
+ */
+export function tagMatches(tag, wanted) {
+  return tag === wanted || tag.startsWith(`${wanted}/`)
+}
+
+/** The levels of a tag, from the top down: `a/b/c` → `a`, `a/b`, `a/b/c`. */
+export function tagLevels(tag) {
+  const parts = tag.split('/')
+  return parts.map((_, index) => parts.slice(0, index + 1).join('/'))
+}
+
+/** The last level, which is what a chip shows when the branch is already known. */
+export function tagLeaf(tag) {
+  const parts = tag.split('/')
+  return parts[parts.length - 1]
+}
+
+/**
+ * The vocabulary as a tree.
+ *
+ * Levels that nobody tagged directly still appear: file one line under
+ * `pricing/discounts` and `pricing` is a real place to click, holding that one
+ * line, even though no utterance carries the bare name. Otherwise the first
+ * sublevel somebody invents makes its own parent unreachable.
+ *
+ * @param {Array<{name: string, uses: number}>} entries flat, own-counts only
+ */
+export function tagTree(entries) {
+  const nodes = new Map()
+  const node = (path) => {
+    if (!nodes.has(path)) {
+      nodes.set(path, { path, name: tagLeaf(path), uses: 0, total: 0, children: [], own: false })
+    }
+    return nodes.get(path)
+  }
+
+  for (const entry of entries) {
+    const levels = tagLevels(entry.name)
+    for (const [depth, level] of levels.entries()) {
+      const current = node(level)
+      // Every level counts what is under it; only the tag itself counts as its
+      // own, which is the difference between "6 lines in here" and "6 lines
+      // filed at exactly this level".
+      current.total += entry.uses
+      if (depth > 0) {
+        const parent = node(levels[depth - 1])
+        if (!parent.children.includes(current)) parent.children.push(current)
+      }
+    }
+    const leaf = node(entry.name)
+    leaf.uses += entry.uses
+    leaf.own = true
+  }
+
+  const sort = (list) => {
+    list.sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+    for (const child of list) sort(child.children)
+    return list
+  }
+  return sort([...nodes.values()].filter((entry) => !entry.path.includes('/')))
+}
+
+/** Every utterance under a tag, as row indices -- sublevels included. */
 export function rowsWithTag(segments, tags, tag) {
-  const starts = new Set(tags.filter((entry) => entry.tag === tag).map((entry) => at(entry.start)))
+  const starts = new Set(
+    tags.filter((entry) => tagMatches(entry.tag, tag)).map((entry) => at(entry.start)),
+  )
   const rows = []
   segments.forEach((segment, index) => {
     if (starts.has(at(segment.start))) rows.push(index)

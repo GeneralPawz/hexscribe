@@ -106,15 +106,26 @@
 
       </section>
 
-      <section id="result" class="panel" hidden>
+      <section id="result" class="panel is-openable" hidden>
+        <!-- What the run cost, who is in it and how to export it are facts
+             *about* the transcript, and they live in the aside that opens when
+             the card is clicked. What stays here is the two things done *to*
+             it, as icons, out of the way of the words. -->
         <div class="result-bar">
-          <span id="summary" class="summary"></span>
+          <span id="edited" class="badge badge--muted" hidden>edited</span>
           <div class="actions">
-            <span id="edited" class="badge badge--muted" hidden>edited</span>
-            <button id="undo" type="button" disabled>Undo</button>
-            <button id="speakers" type="button">Speakers</button>
-            <button type="button" data-copy>Copy text</button>
-            <button id="download" type="button">Download…</button>
+            <button id="undo" class="icon" type="button" title="Undo" aria-label="Undo" disabled>
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M3 7h6.5a3.5 3.5 0 1 1 0 7H6" />
+                <path d="M5.5 4.5 3 7l2.5 2.5" />
+              </svg>
+            </button>
+            <button data-copy class="icon" type="button" title="Copy text" aria-label="Copy text">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+                <path d="M10.5 3.5h-7a1 1 0 0 0-1 1v7" />
+              </svg>
+            </button>
           </div>
         </div>
         <!-- Only when part of the audio could not be decoded. Not an error:

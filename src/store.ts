@@ -13,6 +13,22 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
+ * One tag, tidied: `Pricing / Discounts ` is `Pricing/Discounts`.
+ *
+ * The levels are trimmed and the empty ones dropped, so a trailing slash or a
+ * doubled one is a typo rather than a level called nothing.
+ */
+export const normaliseTag = (tag: string): string =>
+  tag
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('/')
+
+/** `%` and `_` are wildcards in LIKE, and a tag is allowed to contain them. */
+const likeSafe = (value: string): string => value.replace(/([\\%_])/g, '\\$1')
+
+/**
  * The time an annotation is anchored to, at millisecond precision.
  *
  * These are keys: a note is found again by matching the utterance's start
@@ -790,9 +806,15 @@ export class StoreService extends Service {
    * The name is added to the library on the way past, which is the only way one
    * ever gets there: a vocabulary that had to be declared before it could be
    * used would be a form to fill in before saying anything.
+   *
+   * `pricing/discounts` is one tag, not two. The hierarchy lives in the name
+   * rather than in a table of parents because that keeps a tag a single value
+   * everywhere -- one column, one index, one thing to type -- and because the
+   * levels above it are worth nothing on their own: nobody wants a row for
+   * `pricing` that exists only to be the parent of the tag they meant.
    */
   tagUtterance(runId: string, start: number, tag: string, on = true): boolean {
-    const trimmed = tag.trim()
+    const trimmed = normaliseTag(tag)
     if (!trimmed) return false
     if (!on) {
       return (
@@ -814,22 +836,44 @@ export class StoreService extends Service {
     return true
   }
 
-  /** Every utterance carrying a tag, across every run. */
+  /**
+   * Every utterance under a tag, across every run -- including its sublevels.
+   *
+   * Asking for `pricing` has to answer with `pricing/discounts` too, or the
+   * upper levels are labels nobody can use: the reason to file something under
+   * a branch is to be able to ask the branch.
+   */
   taggedWith(tag: string): Array<{ run_id: string; start: number }> {
+    const wanted = normaliseTag(tag)
     return this.db
-      .prepare('SELECT run_id, start FROM utterance_tags WHERE tag = ? ORDER BY run_id, start')
-      .all(tag)
+      .prepare(
+        `SELECT DISTINCT run_id, start FROM utterance_tags
+         WHERE tag = ? OR tag LIKE ? ESCAPE '\\'
+         ORDER BY run_id, start`,
+      )
+      .all(wanted, `${likeSafe(wanted)}/%`)
       .map((row) => ({ ...(row as unknown as { run_id: string; start: number }) }))
   }
 
-  /** Forget a tag everywhere. The cascade takes it off every utterance. */
+  /**
+   * Forget a tag everywhere, and everything filed under it.
+   *
+   * The sublevels go too. Leaving `pricing/discounts` behind after deleting
+   * `pricing` would leave a branch nobody can reach from the list, which is a
+   * worse kind of gone than gone.
+   */
   deleteTag(name: string): boolean {
-    return this.db.prepare('DELETE FROM tags WHERE name = ?').run(name).changes > 0
+    const wanted = normaliseTag(name)
+    return (
+      this.db
+        .prepare(`DELETE FROM tags WHERE name = ? OR name LIKE ? ESCAPE '\\'`)
+        .run(wanted, `${likeSafe(wanted)}/%`).changes > 0
+    )
   }
 
   /** Rename it everywhere. `ON UPDATE CASCADE` carries the attachments along. */
   renameTag(from: string, to: string): boolean {
-    const trimmed = to.trim()
+    const trimmed = normaliseTag(to)
     if (!trimmed || trimmed === from) return false
     // Merging into an existing tag is a rename too, and the one place it can
     // happen -- so the attachments are moved first and the empty name dropped.
@@ -837,9 +881,35 @@ export class StoreService extends Service {
       this.db
         .prepare('UPDATE OR IGNORE utterance_tags SET tag = ? WHERE tag = ?')
         .run(trimmed, from)
-      return this.deleteTag(from)
+      this.db.prepare('DELETE FROM tags WHERE name = ?').run(from)
+      this.renameChildren(from, trimmed)
+      return true
     }
-    return this.db.prepare('UPDATE tags SET name = ? WHERE name = ?').run(trimmed, from).changes > 0
+    const renamed =
+      this.db.prepare('UPDATE tags SET name = ? WHERE name = ?').run(trimmed, from).changes > 0
+    // A branch moves with everything under it: renaming `pricing` while
+    // `pricing/discounts` stayed where it was would split one idea in two.
+    const children = this.renameChildren(from, trimmed)
+    return renamed || children
+  }
+
+  /** Move `from/...` to `to/...`, one row at a time so a clash is survivable. */
+  private renameChildren(from: string, to: string): boolean {
+    const rows = this.db
+      .prepare(`SELECT name FROM tags WHERE name LIKE ? ESCAPE '\\'`)
+      .all(`${likeSafe(from)}/%`) as unknown as Array<{ name: string }>
+    let moved = false
+    for (const row of rows) {
+      const wanted = `${to}${row.name.slice(from.length)}`
+      if (this.db.prepare('SELECT 1 AS one FROM tags WHERE name = ?').get(wanted)) {
+        this.db.prepare('UPDATE OR IGNORE utterance_tags SET tag = ? WHERE tag = ?').run(wanted, row.name)
+        this.db.prepare('DELETE FROM tags WHERE name = ?').run(row.name)
+      } else {
+        this.db.prepare('UPDATE tags SET name = ? WHERE name = ?').run(wanted, row.name)
+      }
+      moved = true
+    }
+    return moved
   }
 
   // --- settings --------------------------------------------------------

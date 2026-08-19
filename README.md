@@ -311,8 +311,9 @@ expensive half: a transcript is four minutes of NPU away from existing again,
 and an hour spent reading an interview and marking up where the useful part of
 it is cannot be made again at all.
 
-**Sections** are chapters. Right-click a line, *Start a section here*, and type
-a name into the transcript where the heading will be — the point of the gesture
+**Sections** are chapters. Hover the line between two utterances and a **+**
+appears on it; click it, or right-click a line and pick *Start a section here*,
+and type a name into the transcript where the heading will be — the point of the gesture
 is that you are looking at the line it begins on, which is the one thing a
 dialogue box could not show you. A section runs until the next one starts, so a
 recording is covered without gaps or overlaps, and the strip under the player
@@ -327,6 +328,23 @@ renders in the browser's own shadow tree and cannot be styled or overlaid
 reliably; a strip of its own is honest about being a separate thing, and it can
 carry a click the player has no meaning for.
 
+**The card itself is clickable**, and that is where everything *about* the
+transcript went. It used to carry a line of statistics — `7 segments · 3
+speakers · 0:31 of audio · 3.0 s (10.4× real time) · language en` — above the
+document, where it is read once and then occupies a line forever, plus two
+buttons that opened panels. Clicking the card now opens the aside with three
+tabs: **Info** (which is the run's own panel when the run is stored, so there is
+one place that says when it ran and how fast rather than two that disagree),
+**Speakers**, and **Download**. What stays on the card is the two things done
+*to* the transcript rather than learned about it — undo and copy — as icons,
+right-aligned, out of the way of the words.
+
+That click had one subtlety worth recording. Ctrl+clicking a row re-renders the
+list, so by the time the click bubbled up to the card its target had been
+replaced and `closest('#segments')` matched nothing — selecting two rows popped
+the panel open every time. The card decides whether a click was its own in the
+*capture* phase, before anything below has had a chance to redraw.
+
 **Comments and tags** hang off one line each. Clicking a line opens it in the
 aside — the chip asks about the person and the timestamp plays, so the row
 itself was the one part of an utterance with nothing to say. The comment box
@@ -336,11 +354,38 @@ comment is removed.
 
 A tag is added to the vocabulary by being used; there is no "create a tag" step,
 because a form to fill in before you can say anything is a good way to be sure
-nothing gets said. The field is a dropdown over the tags already in use, showing
-how much is filed under each — the failure it exists to prevent is tagging the
-second interview `price` when the first one said `pricing`, two tags that each
-find half the evidence and neither of which is wrong enough to notice. Renaming
-a tag onto an existing one merges them, which is the only way back from that.
+nothing gets said. The failure it exists to prevent is tagging the second
+interview `price` when the first one said `pricing`, two tags that each find
+half the evidence and neither of which is wrong enough to notice. Renaming a tag
+onto an existing one merges them, which is the only way back from that.
+
+So the field suggests as you type, and the suggestions have to *narrow*: a list
+that still shows everything after four characters is a list nobody reads, and
+the second tag gets made anyway. Three kinds of match, in that order of
+meaning — prefix (`pri` → `pricing`), substring (`count` → `…/discounts`), and
+subsequence (`prdis` → `pricing/discounts`). The last is where fuzzy turns into
+everything-matches-everything, because any short query is a subsequence of half
+the vocabulary; two rules hold it in — at least three characters, and the
+matched letters may not be spread over more than 3.5× the query's own length.
+`ag` would otherwise find `negotiation` and every other word with an a before a
+g in it.
+
+It is a list of its own rather than an `<input list>` and a `<datalist>`: the
+browser decides when to show that one, matches by prefix only, and on some
+platforms keeps offering entries that no longer match. Enter takes the
+highlighted suggestion, or exactly what was typed when nothing is highlighted —
+otherwise a new sublevel would be impossible to type.
+
+**Tags nest.** `pricing/discounts` is one tag with a level in it, not two tags:
+the hierarchy lives in the name, so a tag stays a single value everywhere — one
+column, one index, one thing to type. Clicking a level answers with everything
+under it and clicking the sublevel narrows to exactly that, which is the only
+reason the levels are worth having. A level nobody tagged directly is still a
+place to click: file one line under `pricing/discounts` and `pricing` exists,
+holding that line, shown dimmer because it is a place rather than a choice
+somebody made. Otherwise the first sublevel anyone invents would make its own
+parent unreachable. Renaming or forgetting a branch takes its sublevels with it,
+because half a moved idea is worse than either.
 
 **The drawer** along the bottom answers a different shape of question: *where in
 this recording is everything about X*. It is collapsed until it is asked for,
@@ -360,10 +405,12 @@ part of the tab — drawing them twice meant two lines that no amount of nudging
 made land on each other at every zoom level.
 
 It stays out of the way of the other two surfaces rather than fighting them. It
-begins where the rail rests and sits *under* it, so the rail slides out over the
-top; when the aside opens, the drawer gives up that column instead of sliding
-beneath it, and the tab recentres on what is left. Those are three numbers a
-stylesheet can get wrong quietly, so `annotate-check.mjs` measures them.
+begins a page-margin clear of where the rail rests and sits *under* it, so the
+rail slides out over the top; when the aside opens, the drawer gives up that
+column instead of sliding beneath it, and the tab recentres on what is left. It
+is inset and rounded at the top like every other panel, because it is one. Those
+are three numbers a stylesheet can get wrong quietly, so `annotate-check.mjs`
+measures them.
 
 - **Tags** lists what this recording carries and, separately, the rest of the
   vocabulary. Picking one lists the lines carrying it, each a click from being

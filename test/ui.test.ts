@@ -20,14 +20,19 @@ import { estimateSeconds, progressAt, readRtf, recordRtf } from '../src/ui/publi
 import {
   at as anchor,
   noteAt,
+  normaliseTag,
   rowOf,
   rowsWithTag,
   spanAt,
   spans,
   taggedRows,
+  tagLevels,
+  tagMatches,
   tagsAt,
   tagsInRun,
+  tagTree,
 } from '../src/ui/public/js/annotations.js'
+import { score, suggest } from '../src/ui/public/js/suggest.js'
 
 /**
  * Schemastery fills a plugin's remaining config at load time, but the caller's
@@ -407,4 +412,92 @@ test('the transcript marks which lines have been written on', () => {
   assert.deepEqual([...marks.keys()], [0, 2])
   assert.deepEqual(marks.get(0), { tagged: false, noted: true })
   assert.deepEqual(marks.get(2), { tagged: true, noted: false })
+})
+
+// --- nested tags --------------------------------------------------------
+
+test('a tag is its own name and every level above it', () => {
+  assert.deepEqual(tagLevels('pricing/discounts/volume'), [
+    'pricing',
+    'pricing/discounts',
+    'pricing/discounts/volume',
+  ])
+  assert.equal(normaliseTag(' Pricing / Discounts '), 'Pricing/Discounts')
+  assert.equal(normaliseTag('pricing//'), 'pricing', 'a trailing slash is a typo, not a level')
+})
+
+test('asking for a branch answers with everything filed under it', () => {
+  assert.equal(tagMatches('pricing', 'pricing'), true)
+  assert.equal(tagMatches('pricing/discounts', 'pricing'), true)
+  // Not a prefix of the *string* -- a prefix of the *path*. Otherwise `price`
+  // would claim `pricing`, which is the near-duplicate this is meant to avoid.
+  assert.equal(tagMatches('pricing', 'pric'), false)
+  assert.equal(tagMatches('pricingdiscounts', 'pricing'), false)
+
+  const segments = [
+    { start: 0, end: 5, text: 'a' },
+    { start: 5, end: 10, text: 'b' },
+    { start: 10, end: 15, text: 'c' },
+  ]
+  const tags = [
+    { start: 0, tag: 'pricing' },
+    { start: 5, tag: 'pricing/discounts' },
+    { start: 10, tag: 'staffing' },
+  ]
+  assert.deepEqual(rowsWithTag(segments, tags, 'pricing'), [0, 1], 'the branch, and its sublevels')
+  assert.deepEqual(rowsWithTag(segments, tags, 'pricing/discounts'), [1], 'and a leaf is only itself')
+})
+
+test('a level nobody tagged directly is still a place to click', () => {
+  // File one line under `pricing/discounts` and `pricing` has to exist: the
+  // first sublevel somebody invents must not make its own parent unreachable.
+  const tree = tagTree([
+    { name: 'pricing/discounts', uses: 3 },
+    { name: 'pricing/terms', uses: 1 },
+    { name: 'staffing', uses: 2 },
+  ])
+  assert.deepEqual(tree.map((node: { path: string }) => node.path), ['pricing', 'staffing'])
+
+  const pricing = tree[0]
+  assert.equal(pricing.total, 4, 'what is under it')
+  assert.equal(pricing.uses, 0, 'and nothing filed at exactly this level')
+  assert.equal(pricing.own, false, 'so it is a place, not a tag somebody chose')
+  assert.deepEqual(pricing.children.map((node: { path: string }) => node.path), ['pricing/discounts', 'pricing/terms'])
+  assert.equal(tree[1].own, true)
+})
+
+// --- suggesting what is half-typed --------------------------------------
+
+const VOCABULARY = ['pricing', 'pricing/discounts', 'pricing/terms', 'staffing', 'negotiation']
+
+test('what is typed narrows what is offered', () => {
+  assert.deepEqual(suggest(VOCABULARY, 'pri'), ['pricing', 'pricing/discounts', 'pricing/terms'])
+  assert.deepEqual(suggest(VOCABULARY, 'pricing/d'), ['pricing/discounts'])
+  assert.deepEqual(suggest(VOCABULARY, 'zzz'), [], 'and something nobody has is nothing')
+})
+
+test('a sublevel is suggested by its own name, not only by its path', () => {
+  // After typing `terms` the thing wanted is `pricing/terms`: the branch is
+  // what you have to remember, and remembering it is the part that fails.
+  assert.deepEqual(suggest(VOCABULARY, 'terms'), ['pricing/terms'])
+  assert.equal(score('pricing/terms', 'terms') > score('pricing/terms', 'ric'), true,
+    'a level of its own beats a substring in the middle')
+})
+
+test('fuzzy, but not so fuzzy that everything matches', () => {
+  // Initials find the long one.
+  assert.deepEqual(suggest(VOCABULARY, 'prdis'), ['pricing/discounts'])
+
+  // And the failure this guards: two letters far apart are in half the
+  // vocabulary, so they are not a match at all.
+  assert.equal(score('negotiation', 'ng'), 0, 'two letters is not a query')
+  assert.equal(score('pricing/discounts', 'pts'), 0, 'nor is a scatter across the whole string')
+  assert.equal(suggest(VOCABULARY, 'an').length, 0)
+})
+
+test('the closest answer is offered first, and what is already used is not', () => {
+  assert.equal(suggest(VOCABULARY, 'pricing')[0], 'pricing')
+  assert.deepEqual(suggest(VOCABULARY, 'pri', { exclude: ['pricing'] }),
+    ['pricing/discounts', 'pricing/terms'], 'a tag already on this line is not a suggestion')
+  assert.equal(suggest(VOCABULARY, '').length, 5, 'an empty field offers the vocabulary')
 })

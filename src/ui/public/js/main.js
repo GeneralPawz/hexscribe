@@ -72,6 +72,7 @@ import { closeDrawer, isDrawerOpen, mountDrawer, openDrawer, refreshDrawer } fro
 import { tagsTab } from './drawer-tags.js'
 import { speakersTab } from './drawer-speakers.js'
 import { downloadPanel } from './panel-download.js'
+import { transcriptPanel } from './panel-transcript.js'
 
 const els = {
   form: $('#form'),
@@ -94,8 +95,6 @@ const els = {
   result: $('#result'),
   undo: $('#undo'),
   edited: $('#edited'),
-  download: $('#download'),
-  speakers: $('#speakers'),
   toolbar: $('#toolbar'),
   toolbarCount: $('#toolbar-count'),
   mergeSelected: $('#merge-selected'),
@@ -338,6 +337,7 @@ function render() {
     marks: taggedRows(current.segments, annotations),
     draftSection,
     onSectionCommit: commitSection,
+    onInsertSection: beginSection,
     onSectionMenu: (section, event, action) =>
       action === 'rename' ? renameSection(section) : openSectionMenu(section, event),
   })
@@ -943,17 +943,77 @@ els.speakerSelected.addEventListener('click', () => {
   openSpeakerMenu(bounds.left, bounds.bottom + 4, [...selectedRows].sort((a, b) => a - b))
 })
 
-els.speakers.addEventListener('click', () => openSpeakerBrowser())
+/**
+ * What is known about the transcript on screen.
+ *
+ * Opened by clicking the card -- anywhere on it that is not a line, a control
+ * or the player, because those already mean something. The run's own panel is
+ * the first tab when the run is stored, so there is one place that says when it
+ * ran and how fast rather than two that disagree.
+ */
+async function openTranscriptPanel(tab = 'info') {
+  if (!current) return
+  // A run that finished a minute ago is in the database as much as one from
+  // last week, so the panel says the same things about both -- the difference
+  // used to be only that nobody had clicked it in the rail yet.
+  const run = viewing ?? (runId ? await getRun(runId).catch(() => null) : null)
+  openAside(
+    transcriptPanel({
+      transcript: current,
+      wall: lastWall,
+      name: viewing?.name ?? baseName,
+      runPanel: run ? runPanel(runPanelOptions(run)) : undefined,
+      downloadPanel: downloadPanel({ transcript: current, baseName }),
+      active: tab,
+      onOpenSpeaker: openSpeakerPanel,
+      onBrowseSpeakers: () => openSpeakerBrowser(),
+    }),
+  )
+}
+
+/**
+ * Whether the click that is on its way up came from the card itself.
+ *
+ * Decided in the capture phase, before anything below has run. A Ctrl+click on
+ * a row re-renders the list, so by the time the click reaches the card its
+ * target has been replaced and `closest('#segments')` finds nothing at all --
+ * which made selecting two rows pop the panel open every time.
+ */
+let cameFromCard = false
+els.result.addEventListener(
+  'click',
+  (event) => {
+    cameFromCard =
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.target.closest('#segments, button, input, select, textarea, audio, #timeline, .toolbar')
+  },
+  true,
+)
+
+els.result.addEventListener('click', () => {
+  if (!cameFromCard) return
+  // A drag across the text is somebody quoting the transcript, not asking about
+  // the run.
+  if (String(window.getSelection?.() ?? '').length) return
+  void openTranscriptPanel()
+})
 
 els.clearSelected.addEventListener('click', () => {
   selectedRows.clear()
   render()
 })
 
-els.download.addEventListener('click', () => {
+// Kept as a keyboard-reachable path to the same tab: the card is a click
+// target, and a click target is not a control.
+document.addEventListener('keydown', (event) => {
+  if (!(event.key === 'd' && (event.ctrlKey || event.metaKey) && event.shiftKey)) return
   if (!current) return
-  openAside(downloadPanel({ transcript: current, baseName }))
+  event.preventDefault()
+  void openTranscriptPanel('download')
 })
+
+
 
 function openRowMenu(position, event, textElement) {
   const segment = current.segments[position]
