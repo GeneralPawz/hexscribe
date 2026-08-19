@@ -24,7 +24,14 @@ export function closeMenu() {
  * @param {number} y
  * @param {Array<
  *   { heading: string } |
- *   { label: string, checked?: boolean, disabled?: boolean, onSelect?: () => void }
+ *   {
+ *     label: string,
+ *     checked?: boolean,
+ *     disabled?: boolean,
+ *     danger?: boolean,
+ *     icon?: () => SVGElement,
+ *     onSelect?: () => void,
+ *   }
  * >} items
  */
 export function openMenu(x, y, items) {
@@ -50,7 +57,10 @@ export function openMenu(x, y, items) {
 
     const button = document.createElement('button')
     button.type = 'button'
-    button.className = 'menu__item'
+    // Red for the ones that take something away for good. There is no undo for
+    // forgetting a tag or a voice, and a menu where every line looks the same
+    // is a menu where the irreversible one is a slip of the pointer away.
+    button.className = `menu__item${item.danger ? ' menu__item--danger' : ''}`
     button.setAttribute('role', 'menuitem')
     button.disabled = Boolean(item.disabled)
 
@@ -58,7 +68,8 @@ export function openMenu(x, y, items) {
     // well, and a column of explanations makes a short list feel long.
     const mark = document.createElement('span')
     mark.className = 'menu__mark'
-    mark.textContent = item.checked ? '✓' : ''
+    if (item.checked) mark.textContent = '✓'
+    else if (item.icon) mark.append(item.icon())
     button.append(mark)
 
     const label = document.createElement('span')

@@ -101,22 +101,33 @@ test('a section names a stretch, and renaming it is saving it again', async (t) 
   assert.equal(app.ctx.store.annotations('a').sections.length, 1)
 })
 
-test('a comment is kept against the utterance, and clearing it deletes it', async (t) => {
+test('a line can be commented on more than once', async (t) => {
+  // Reading an interview twice produces two thoughts about the same sentence,
+  // and the box that could only hold one made the second overwrite the first.
   const app = await store()
   t.after(app.dispose)
   app.ctx.store.saveRun(run('a'), transcript())
 
-  app.ctx.store.saveNote('a', 10, 'ask about this again')
-  assert.equal(app.ctx.store.annotations('a').notes[0].body, 'ask about this again')
+  const first = app.ctx.store.saveNote('a', 10, 'ask about this again')
+  const second = app.ctx.store.saveNote('a', 10, 'she hesitated')
+  assert.notEqual(first, second)
 
-  app.ctx.store.saveNote('a', 10, 'ask about this again — she hesitated')
   const notes = app.ctx.store.annotations('a').notes
-  assert.equal(notes.length, 1, 'one comment per utterance, not a thread')
-  assert.match(notes[0].body, /hesitated/)
+  assert.deepEqual(notes.map((note) => note.body), ['ask about this again', 'she hesitated'],
+    'oldest first: they read as a thread')
+
+  // Editing one leaves the other alone.
+  app.ctx.store.saveNote('a', 10, 'ask about this again, gently', first as number)
+  assert.deepEqual(
+    app.ctx.store.notesAt('a', 10).map((note) => note.body),
+    ['ask about this again, gently', 'she hesitated'],
+  )
 
   // Emptying the box is how a comment is removed. Anything else would be a
   // delete button nobody looks for, and a row holding an empty string.
-  app.ctx.store.saveNote('a', 10, '   ')
+  app.ctx.store.saveNote('a', 10, '   ', first as number)
+  assert.deepEqual(app.ctx.store.notesAt('a', 10).map((note) => note.body), ['she hesitated'])
+  assert.equal(app.ctx.store.deleteNote(second as number), true)
   assert.deepEqual(app.ctx.store.annotations('a').notes, [])
 })
 
@@ -245,6 +256,7 @@ test('joining two utterances carries the annotations of both', async (t) => {
 
   app.ctx.store.saveNote('a', 0, 'the question')
   app.ctx.store.saveNote('a', 10, 'she hesitated')
+  app.ctx.store.saveNote('a', 10, 'and again')
   app.ctx.store.tagUtterance('a', 0, 'pricing')
   app.ctx.store.tagUtterance('a', 10, 'pricing')
   app.ctx.store.tagUtterance('a', 10, 'follow up')
@@ -253,12 +265,13 @@ test('joining two utterances carries the annotations of both', async (t) => {
   assert.equal(app.ctx.store.moveAnnotations('a', 10, 0), true)
 
   const { notes, tags } = app.ctx.store.annotations('a')
-  assert.equal(notes.length, 1, 'one line, one comment')
-  assert.equal(
-    notes[0].body,
-    'the question\n\nshe hesitated',
-    'and both halves of it: a merge is not somebody choosing which of their own notes to lose',
+  assert.deepEqual(
+    notes.map((note) => note.body),
+    ['the question', 'she hesitated', 'and again'],
+    'the surviving line keeps every comment from both: a merge is not somebody ' +
+      'choosing which of their own notes to lose',
   )
+  assert.ok(notes.every((note) => note.start === 0), 'all on the line that absorbed them')
   assert.deepEqual(
     tags.map((entry) => entry.tag),
     ['follow up', 'pricing'],
@@ -288,6 +301,7 @@ test('moving an annotation nowhere is not a move', async (t) => {
 
   assert.equal(app.ctx.store.moveAnnotations('a', 10, 10), false)
   assert.equal(app.ctx.store.annotations('a').notes[0].body, 'unchanged')
+  assert.equal(app.ctx.store.annotations('a').notes[0].start, 10)
 })
 
 // --- nested tags --------------------------------------------------------
@@ -345,4 +359,84 @@ test('forgetting a branch forgets what was under it', async (t) => {
     ['staffing'],
     'and the attachments went with them',
   )
+})
+
+// --- the transcript itself ----------------------------------------------
+
+test('an edited transcript is kept, and the counts follow it', async (t) => {
+  // Merging two utterances, correcting a word, moving a line to another
+  // speaker: all of it lived in the page and nowhere else, so closing the tab
+  // threw away the corrections while the comments written *about* them stayed.
+  const app = await store()
+  t.after(app.dispose)
+  app.ctx.store.saveRun(run('a'), transcript())
+
+  const edited = {
+    ...transcript(),
+    segments: [{ index: 0, start: 0, end: 20, text: 'a b', speaker: 'Mara' }],
+  }
+  assert.equal(app.ctx.store.saveTranscript('a', edited as never), true)
+
+  const found = app.ctx.store.getRun('a')
+  assert.equal(found?.transcript?.segments.length, 1, 'the words that are there now')
+  assert.equal(found?.segments, 1, 'and the count the rail lists')
+  assert.equal(found?.speakers, 1)
+
+  assert.equal(app.ctx.store.saveTranscript('nobody', edited as never), false)
+})
+
+test('a run remembers who is in it, so a voice can be found again', async (t) => {
+  const app = await store()
+  t.after(app.dispose)
+
+  const withSpeakers = {
+    ...transcript(),
+    segments: [
+      { index: 0, start: 0, end: 10, text: 'a', speaker: 'Mara' },
+      { index: 1, start: 10, end: 20, text: 'b', speaker: 'Mara' },
+      { index: 2, start: 20, end: 25, text: 'c', speaker: 'SPEAKER_01' },
+    ],
+  }
+  app.ctx.store.saveRun(run('a'), withSpeakers as never)
+  app.ctx.store.saveRun(run('b'), withSpeakers as never)
+  app.ctx.store.saveRun(run('c'), transcript())
+
+  const heard = app.ctx.store.runsWithSpeaker('Mara')
+  assert.deepEqual(heard.map((entry) => entry.id).sort(), ['a', 'b'])
+  assert.equal(heard[0].utterances, 2)
+  assert.equal(heard[0].speaker_seconds, 20)
+  assert.deepEqual(app.ctx.store.runsWithSpeaker('nobody'), [])
+
+  // Renaming a speaker in the transcript is how somebody is named, so the
+  // record of where they were heard has to follow the edit rather than the run.
+  app.ctx.store.saveTranscript('a', {
+    ...withSpeakers,
+    segments: withSpeakers.segments.map((segment) =>
+      segment.speaker === 'Mara' ? { ...segment, speaker: 'Mara Weber' } : segment,
+    ),
+  } as never)
+  assert.deepEqual(app.ctx.store.runsWithSpeaker('Mara').map((entry) => entry.id), ['b'])
+  assert.deepEqual(app.ctx.store.runsWithSpeaker('Mara Weber').map((entry) => entry.id), ['a'])
+})
+
+test('a voice can be given a face, and enrolling again does not take it off', async (t) => {
+  const app = await store()
+  t.after(app.dispose)
+
+  app.ctx.store.saveVoice({ name: 'Mara', embedding: [1, 0], seconds: 30, recordings: 1 })
+  assert.equal(app.ctx.store.setVoiceFace('Mara', '🎧', 3), true)
+  assert.deepEqual(
+    app.ctx.store.listVoices().map((voice) => [voice.name, voice.emoji, voice.colour]),
+    [['Mara', '🎧', 3]],
+  )
+
+  // More speech for somebody must not quietly remove their picture.
+  app.ctx.store.saveVoice({ name: 'Mara', embedding: [1, 0], seconds: 60, recordings: 2 })
+  const kept = app.ctx.store.listVoices()[0]
+  assert.equal(kept.emoji, '🎧')
+  assert.equal(kept.seconds, 60, 'while the print itself did move')
+
+  assert.equal(app.ctx.store.setVoiceFace('Mara', null, null), true, 'and it can be taken off')
+  assert.equal(app.ctx.store.listVoices()[0].emoji, null)
+  assert.equal(app.ctx.store.setVoiceFace('nobody', '🎧', 1), false)
 })

@@ -10,11 +10,16 @@
  * for: a fragmented hour comes out of diarization as a dozen speakers, and the
  * prints of the merged ones combine into one that describes the person better
  * than any fragment did.
+ *
+ * The right half is where one of them is *edited* — name, face, and every other
+ * recording they have been heard in. Their lines are not listed there: picking
+ * a speaker filters the transcript instead, where the lines sit in order with
+ * what was said around them.
  */
 
 import { panes } from './drawer.js'
-import { speakerSummary, utterancesOf } from './segments.js'
-import { utteranceList } from './utterance-list.js'
+import { speakerSummary } from './segments.js'
+import { speakerPane } from './drawer-speaker.js'
 import { clock } from './dom.js'
 
 /** `SPEAKER_02` is the wire label; a name somebody gave is already readable. */
@@ -23,13 +28,13 @@ const short = (name) => (name.startsWith('SPEAKER_') ? name.replace(/^SPEAKER_0*
 /**
  * @param {object} options
  * @param {object} options.transcript
- * @param {string} [options.focus] whose utterances are shown
- * @param {(speaker: string) => void} options.onFocus
+ * @param {string} [options.focus] who the right half is about
+ * @param {number} options.matches lines the transcript is filtered to
+ * @param {object} options.editing everything `speakerPane` needs for the focused one
+ * @param {(speaker: string|null) => void} options.onFocus
  * @param {(names: string[], into: string) => void} options.onMerge
- * @param {(speaker: string) => void} options.onOpenSpeaker the identity panel
- * @param {(position: number) => void} options.onJump
  */
-export function speakersTab({ transcript, focus, onFocus, onMerge, onOpenSpeaker, onJump }) {
+export function speakersTab({ transcript, focus, matches = 0, editing, onFocus, onMerge }) {
   // Longest-speaking first: the real people are at the top and the debris is at
   // the bottom, which is the order you want to merge in.
   const summary = speakerSummary(transcript.segments).sort((a, b) => b.seconds - a.seconds)
@@ -38,7 +43,9 @@ export function speakersTab({ transcript, focus, onFocus, onMerge, onOpenSpeaker
     id: 'speakers',
     label: `Speakers (${summary.length})`,
     mount(body) {
-      const { left, right } = panes(body, { emptyRight: 'Pick a speaker to hear them.' })
+      const { left, right } = panes(body, {
+        emptyRight: 'Pick a speaker to name them, give them a face, or see where else they have been heard.',
+      })
 
       if (!summary.length) {
         const empty = document.createElement('p')
@@ -66,20 +73,23 @@ export function speakersTab({ transcript, focus, onFocus, onMerge, onOpenSpeaker
           update()
         })
 
+        const pick = () => onFocus(entry.name === focus ? null : entry.name)
+
         const chip = document.createElement('button')
         chip.type = 'button'
         chip.className = 'speaker'
-        chip.dataset.colour = String(colours.get(entry.name))
-        chip.textContent = short(entry.name)
-        chip.title = `${entry.name} — who is this?`
-        chip.addEventListener('click', () => onOpenSpeaker(entry.name))
+        chip.dataset.colour = String(editing?.faces?.get(entry.name)?.colour ?? colours.get(entry.name))
+        const emoji = editing?.faces?.get(entry.name)?.emoji
+        chip.textContent = emoji ? `${emoji} ${short(entry.name)}` : short(entry.name)
+        chip.title = `${entry.name} — filter the transcript to them`
+        chip.addEventListener('click', pick)
 
         const meta = document.createElement('button')
         meta.type = 'button'
         meta.className = 'speakers__meta'
         meta.textContent = `${entry.utterances} utterances · ${clock(entry.seconds)}`
-        meta.title = 'Show what they said'
-        meta.addEventListener('click', () => onFocus(entry.name))
+        meta.title = 'Filter the transcript to what they said'
+        meta.addEventListener('click', pick)
 
         item.append(tick, chip, meta)
         list.append(item)
@@ -115,20 +125,16 @@ export function speakersTab({ transcript, focus, onFocus, onMerge, onOpenSpeaker
       actions.append(merge, hint)
       left.append(actions)
 
-      if (!focus) return
+      if (!focus || !editing) return
 
-      const found = utterancesOf(transcript.segments, focus)
-      const seconds = found.reduce((total, entry) => total + (entry.segment.end - entry.segment.start), 0)
+      speakerPane(right, editing)
 
-      const heading = document.createElement('p')
-      heading.className = 'aside__name'
-      heading.textContent = focus
-
-      const count = document.createElement('p')
-      count.className = 'aside__note aside__note--muted'
-      count.textContent = `${found.length} utterances · ${clock(seconds)}`
-
-      right.replaceChildren(heading, count, utteranceList(found, onJump))
+      const filtered = document.createElement('p')
+      filtered.className = matches ? 'aside__note aside__note--ok' : 'aside__note aside__note--muted'
+      filtered.textContent = matches
+        ? `The transcript is showing their ${matches} line${matches === 1 ? '' : 's'}.`
+        : 'They say nothing in this recording.'
+      right.append(filtered)
     },
   }
 }

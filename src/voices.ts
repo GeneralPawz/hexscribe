@@ -22,6 +22,9 @@ export interface Voice {
   seconds: number
   /** How many recordings have contributed. */
   recordings: number
+  /** A face for the voice: an emoji, and a colour index. Both optional. */
+  emoji?: string | null
+  colour?: number | null
 }
 
 /** What one speaker in one transcript sounded like. */

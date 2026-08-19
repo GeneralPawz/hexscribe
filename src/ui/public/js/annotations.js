@@ -57,10 +57,16 @@ export function rowOf(segments, start) {
   return segments.findIndex((segment) => at(segment.start) === anchor)
 }
 
-/** The comment on an utterance, if it has one. */
-export function noteAt(notes, start) {
+/**
+ * The comments on an utterance, oldest first.
+ *
+ * Several, not one: reading an interview twice produces two thoughts about the
+ * same sentence, and a box that held only one made the second overwrite the
+ * first.
+ */
+export function notesAt(notes, start) {
   const anchor = at(start)
-  return notes.find((note) => at(note.start) === anchor)?.body ?? ''
+  return notes.filter((note) => at(note.start) === anchor)
 }
 
 /** The tags on an utterance, in the order they read best: alphabetical. */

@@ -576,21 +576,35 @@ button.speaker:focus-visible {
   color: var(--speaker-ink, var(--muted));
 }
 
-.speaker[data-colour="0"] { --speaker-bg: #dce8ff; --speaker-ink: #1c4bb0; }
-.speaker[data-colour="1"] { --speaker-bg: #dff3e4; --speaker-ink: #1a6b3d; }
-.speaker[data-colour="2"] { --speaker-bg: #fbe6d5; --speaker-ink: #96490d; }
-.speaker[data-colour="3"] { --speaker-bg: #eee0fb; --speaker-ink: #66299b; }
-.speaker[data-colour="4"] { --speaker-bg: #fbdfe6; --speaker-ink: #9c1f42; }
-.speaker[data-colour="5"] { --speaker-bg: #d9f0f4; --speaker-ink: #14606e; }
+/* The six speaker colours, named once. A chip in the transcript, an avatar in
+   the drawer and a swatch in the picker are the same person, so they cannot be
+   allowed to drift apart by being written down three times. */
+:root {
+  --hue-0-bg: #dce8ff; --hue-0-ink: #1c4bb0;
+  --hue-1-bg: #dff3e4; --hue-1-ink: #1a6b3d;
+  --hue-2-bg: #fbe6d5; --hue-2-ink: #96490d;
+  --hue-3-bg: #eee0fb; --hue-3-ink: #66299b;
+  --hue-4-bg: #fbdfe6; --hue-4-ink: #9c1f42;
+  --hue-5-bg: #d9f0f4; --hue-5-ink: #14606e;
+}
 
 @media (prefers-color-scheme: dark) {
-  .speaker[data-colour="0"] { --speaker-bg: #1d2c4d; --speaker-ink: #a8c4ff; }
-  .speaker[data-colour="1"] { --speaker-bg: #16301f; --speaker-ink: #90dcae; }
-  .speaker[data-colour="2"] { --speaker-bg: #3a2612; --speaker-ink: #f0b781; }
-  .speaker[data-colour="3"] { --speaker-bg: #2c1c40; --speaker-ink: #cfaaf3; }
-  .speaker[data-colour="4"] { --speaker-bg: #3b1a25; --speaker-ink: #f4a3b8; }
-  .speaker[data-colour="5"] { --speaker-bg: #12303620; --speaker-ink: #93d6e2; }
+  :root {
+    --hue-0-bg: #1d2c4d; --hue-0-ink: #a8c4ff;
+    --hue-1-bg: #16301f; --hue-1-ink: #90dcae;
+    --hue-2-bg: #3a2612; --hue-2-ink: #f0b781;
+    --hue-3-bg: #2c1c40; --hue-3-ink: #cfaaf3;
+    --hue-4-bg: #3b1a25; --hue-4-ink: #f4a3b8;
+    --hue-5-bg: #123036; --hue-5-ink: #93d6e2;
+  }
 }
+
+.speaker[data-colour="0"] { --speaker-bg: var(--hue-0-bg); --speaker-ink: var(--hue-0-ink); }
+.speaker[data-colour="1"] { --speaker-bg: var(--hue-1-bg); --speaker-ink: var(--hue-1-ink); }
+.speaker[data-colour="2"] { --speaker-bg: var(--hue-2-bg); --speaker-ink: var(--hue-2-ink); }
+.speaker[data-colour="3"] { --speaker-bg: var(--hue-3-bg); --speaker-ink: var(--hue-3-ink); }
+.speaker[data-colour="4"] { --speaker-bg: var(--hue-4-bg); --speaker-ink: var(--hue-4-ink); }
+.speaker[data-colour="5"] { --speaker-bg: var(--hue-5-bg); --speaker-ink: var(--hue-5-ink); }
 
 .check {
   flex-direction: row !important;
@@ -1509,9 +1523,11 @@ body {
 .insert {
   position: absolute;
   top: -10px;
-  /* Inside the row, not hanging off it: the list scrolls, and a scroll
-     container clips on both axes whatever the other one is set to. */
-  left: 0;
+  /* Centred on the line it would cut. It used to sit at the left edge, where it
+     reads as a control belonging to the row below rather than as a place to
+     divide the two. */
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 2;
   display: grid;
   place-items: center;
@@ -1553,6 +1569,27 @@ body {
   .insert {
     transition: none;
   }
+}
+
+/* An icon inside a menu row, in the column the tick uses: one or the other,
+   never both, so the labels stay on one line. */
+.menu__mark .icon__glyph {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vertical-align: -2px;
+}
+
+.menu__item--danger {
+  color: var(--err);
+}
+
+.menu__item--danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--err) 14%, transparent);
 }
 
 /* --- sections, and the shape of a recording --------------------------- */
@@ -2048,4 +2085,310 @@ body {
    line you were reading is still somewhere you can scroll to. */
 body.has-drawer main {
   padding-bottom: 50vh;
+}
+
+
+/* --- the transport in the utterance panel ----------------------------- */
+
+.transport {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0.2rem 0 0.6rem;
+}
+
+.transport__rate {
+  margin-left: auto;
+  padding: 0.2rem 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.transport__custom {
+  width: 4.5rem;
+  padding: 0.2rem 0.3rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.icon--danger:hover:not(:disabled) {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 45%, var(--line));
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+}
+
+/* --- comments, as a list ---------------------------------------------- */
+
+.thread {
+  display: flex;
+  flex-direction: column;
+}
+
+.thread__comment {
+  padding: 0.35rem 0.1rem 0.2rem;
+}
+
+.thread__text {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  cursor: text;
+}
+
+.thread__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+
+.thread__when {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.thread__bar .icon {
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  opacity: 0;
+}
+
+.thread__comment:hover .icon,
+.thread__bar .icon:focus-visible {
+  opacity: 1;
+}
+
+/* The line between two comments, with the same + the transcript puts between
+   two utterances: one gesture for "another one goes here". */
+.thread__line {
+  position: relative;
+  min-height: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.insert--inline {
+  top: -9px;
+}
+
+.thread__line:hover > .insert,
+.insert--inline:focus-visible {
+  opacity: 1;
+}
+
+.thread__line textarea {
+  margin: 0.4rem 0;
+}
+
+/* --- the filter bar ---------------------------------------------------- */
+
+.filter {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 0.8rem;
+}
+
+.filter__what {
+  font-weight: 600;
+}
+
+.filter__count {
+  color: var(--muted);
+}
+
+.filter .tool {
+  margin-left: auto;
+}
+
+/* --- dragging one tag onto another ------------------------------------ */
+
+.tag--pick[draggable="true"] {
+  cursor: grab;
+}
+
+.tag.is-dragging {
+  opacity: 0.4;
+}
+
+.tag.is-target {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* --- the speaker editor in the drawer --------------------------------- */
+
+.pane__tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0.4rem 0 0.6rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.pane__tab {
+  padding: 0.25rem 0.5rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.pane__tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.pane__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.face {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.face__avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--hue-0-bg);
+  color: var(--hue-0-ink);
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.face__avatar[data-colour="1"] { background: var(--hue-1-bg); color: var(--hue-1-ink); }
+.face__avatar[data-colour="2"] { background: var(--hue-2-bg); color: var(--hue-2-ink); }
+.face__avatar[data-colour="3"] { background: var(--hue-3-bg); color: var(--hue-3-ink); }
+.face__avatar[data-colour="4"] { background: var(--hue-4-bg); color: var(--hue-4-ink); }
+.face__avatar[data-colour="5"] { background: var(--hue-5-bg); color: var(--hue-5-ink); }
+
+.face__picker,
+.face__colours {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+.face__option {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.face__option:hover,
+.face__option.is-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.face__option--none .icon__glyph {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+}
+
+.face__colour {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--hue-0-bg);
+  cursor: pointer;
+}
+
+.face__colour[data-colour="1"] { background: var(--hue-1-bg); }
+.face__colour[data-colour="2"] { background: var(--hue-2-bg); }
+.face__colour[data-colour="3"] { background: var(--hue-3-bg); }
+.face__colour[data-colour="4"] { background: var(--hue-4-bg); }
+.face__colour[data-colour="5"] { background: var(--hue-5-bg); }
+
+.face__colour.is-active {
+  border-color: var(--ink);
+}
+
+.field.is-disabled {
+  opacity: 0.55;
+}
+
+.audios {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.audios__row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 0.3rem 0.4rem;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.audios__row:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.audios__meta {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.tool--icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.tool--icon .icon__glyph {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }

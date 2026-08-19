@@ -89,12 +89,14 @@ await client.audio.transcriptions.create({
 | `GET /v1/runs` | recorded runs; `?id=` for one, with its transcript and log |
 | `GET /v1/runs/audio?id=` | the stored recording for a run |
 | `POST /v1/runs/{rename,delete,audio/detach}` | call a run something else, forget it, or drop its audio |
+| `POST /v1/runs/transcript` | keep an edit: a merge, a correction, a line moved |
+| `GET /v1/speakers/runs?name=` | every recording a speaker has been heard in |
 | `POST /v1/runs/resume` | continue an interrupted run from its last utterance |
 | `GET /v1/files?path=` | browse this machine for a recording (loopback only) |
 | `GET /v1/files/audio?path=` | stream one, with range requests |
 | `GET /v1/annotations?run=` | sections, comments and tags for a run |
 | `POST /v1/sections`, `/v1/sections/delete` | name a stretch of a recording |
-| `POST /v1/notes` | comment on one utterance; an empty body clears it |
+| `POST /v1/notes`, `/v1/notes/delete` | comments on one utterance; several per line |
 | `POST /v1/annotations/move` | carry annotations across when an edit joins two lines |
 | `GET,POST /v1/tags` | the vocabulary, and putting one on an utterance |
 | `POST /v1/tags/{rename,delete}` | rename a tag everywhere, or forget it |
@@ -105,6 +107,7 @@ await client.audio.transcriptions.create({
 | `GET /v1/voices` | the named voices this machine knows |
 | `POST /v1/voices` | name a voice, from a transcript's `voices` entry |
 | `POST /v1/voices/learn` | fold hand-corrected utterances into a stored print |
+| `POST /v1/voices/face` | an emoji and a colour for a voice |
 | `POST /v1/voices/{rename,forget}` | correct a name, or forget a person |
 | `GET /` | the browser UI (from the `ui` plugin; remove it and this 404s) |
 | `POST /ui/format?to=srt` | re-render a transcript the caller already has |
@@ -304,6 +307,29 @@ the next window starts where the seek put it, so a boundary *inside* one sentenc
 routinely shows a second of "silence". The tolerance is 1.5 s because that is
 what the artefact measures, not because it sounded right.
 
+### An edit is kept
+
+Merging two utterances, correcting a word, moving a line to another speaker:
+all of that lived in the page and nowhere else. Close the tab and the
+corrections were gone, while the comments written *about* them survived — which
+is exactly backwards, because the correction is the part that took attention.
+
+Every edit is now written back, debounced by 600 ms so that six merges while
+tidying a paragraph are one request rather than six. The counts the rail lists
+are recomputed from what was stored rather than taken from the request: a list
+that disagrees with the document it points at is worse than one a second out of
+date.
+
+The save takes **only the parts a person can edit** — the utterances, their
+text, who said them. What the machine measured (which engine, which model, how
+long the audio was, how fast it ran) is kept from what is already in the
+database. That is not tidiness: the page holds the transcript in OpenAI's
+*verbose* shape, with `duration` and an `id` per segment, and the database holds
+the engine's, with `timing` and an `index`. The first version stored the page's
+shape, which could be written and never read — every later request for that run
+answered 500 and the run looked lost. `test/store-http.test.ts` exists for that
+one bug.
+
 ### Reading it back: sections, comments, tags
 
 Everything above is the machine's half. This is the other one, and it is the
@@ -347,10 +373,28 @@ the panel open every time. The card decides whether a click was its own in the
 
 **Comments and tags** hang off one line each. Clicking a line opens it in the
 aside — the chip asks about the person and the timestamp plays, so the row
-itself was the one part of an utterance with nothing to say. The comment box
-saves when it loses focus, because reaching for a Save button after every
-thought is what stops people writing the thought down, and emptying it is how a
-comment is removed.
+itself was the one part of an utterance with nothing to say.
+
+A line holds *several* comments, in a list with the same **+** on the line
+between them: reading an interview twice produces two thoughts about the same
+sentence, and the first version's single box made the second overwrite the
+first. Each saves when it loses focus, because reaching for a Save button after
+every thought is what stops the thought being written down, and emptying one is
+how it is removed.
+
+The panel is also the **transport** for that stretch of audio, because deciding
+who said something, or what it meant, means hearing it again — usually more than
+once and often slower. Play, pause, stop (which comes back to the start of the
+line rather than keeping your place), replay, and a speed: 0.75× to 2× as
+presets with a number field for anything from 0.25 to 5. `preservesPitch` is
+what makes the slow end usable — without it a slowed voice drops an octave and
+gets *harder* to make out, which is the opposite of why anybody reaches for the
+control.
+
+And the **speaker of that one line** is editable there, from a field that
+suggests every label in the transcript and every named voice and takes anything
+else as a new one. The commonest correction after diarization is a single line
+put with the wrong person, and it should not need a menu.
 
 A tag is added to the vocabulary by being used; there is no "create a tag" step,
 because a form to fill in before you can say anything is a good way to be sure
@@ -413,12 +457,39 @@ are three numbers a stylesheet can get wrong quietly, so `annotate-check.mjs`
 measures them.
 
 - **Tags** lists what this recording carries and, separately, the rest of the
-  vocabulary. Picking one lists the lines carrying it, each a click from being
-  played.
+  vocabulary.
 - **Speakers** is the browse-and-merge view, which used to be a two-tab panel in
   the right aside and was the wrong shape there: deciding whether `S7` and `S11`
   are the same person means listening to both, and doing that in a column narrow
   enough to sit beside a transcript meant tabbing between a list and its lines.
+
+Picking a tag or a speaker **filters the transcript** rather than listing its
+lines in the drawer. The lines belong in the document, in order, with what was
+said before and after them — that context is most of what makes a line mean
+anything, and a list in a panel throws it away. A bar above the transcript says
+what is being shown and how much of it is hidden, because a document showing a
+fifth of its lines with nothing to say so looks like one that lost the rest.
+
+Which leaves the drawer's other half for editing the thing you picked.
+
+**A tag** can be renamed, forgotten (in red, with a wastebasket — there is no
+undo for it), or **merged by dragging one onto another**. That gesture is the
+one the idea already has: put this in there. The alternative was typing the
+target's whole path into a rename box, and for `deeply/nested/tag` that is
+exactly the typing that produces a near-duplicate instead of a merge. A tag
+cannot be dropped on itself or into its own branch, and the one under the
+pointer says it would take it.
+
+**A speaker** gets two tabs. *General* is their name — written through every
+line of this transcript and stored against the voice print, so the next
+recording is recognised without being told again — and a face: an emoji and one
+of the six speaker colours. Not an uploaded picture, because it has to be
+legible in a 20px chip beside a line of text and a photograph at that size is a
+smudge; and because a photograph of a person is a much heavier thing to keep
+than an emoji. *Audios* is every recording that voice has been heard in, which
+is the question the voice library exists to answer and which nothing in the app
+could answer until now — a `run_speakers` row is written whenever a transcript
+is stored, so it is a query rather than a scan of every transcript.
 
 **All of it is anchored to when a line was said, not to which row it is.** That
 is the only decision here worth arguing about. Merging two utterances renumbers

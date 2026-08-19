@@ -641,17 +641,43 @@ const speakers = await evaluate(`(async () => {
   const after = new Set([...document.querySelectorAll('#segments li .speaker')].map((c) => c.textContent))
   const listedAfter = document.querySelectorAll('.drawer__pane--list .speakers__row').length
 
-  // And the other pane, with a row that jumps.
-  document.querySelector('.drawer__pane--list .speakers__meta')?.click()
+  // Picking one narrows the transcript to their lines rather than listing them
+  // in the drawer: a line means what was said around it, and a list in a panel
+  // throws that away. The other pane becomes the place to edit *them*.
+  //
+  // Picking the one already picked clears it, and merging just left this
+  // speaker focused -- so the click is repeated when it was a toggle-off.
+  const pick = () => document.querySelector('.drawer__pane--list .speakers__meta')
+  const wasFocused = document.querySelector('.drawer__pane--list .speakers__row')
+    ?.classList.contains('is-active')
+  pick()?.click()
   await settle()
-  const utterances = document.querySelectorAll('.drawer__pane--detail .utterances__row').length
-  document.querySelector('.drawer__pane--detail .utterances__row')?.click()
+  if (wasFocused) {
+    pick()?.click()
+    await settle()
+  }
   await settle()
-  const jumped = document.querySelectorAll('#segments li.is-jumped').length
+  const showing = () => [...document.querySelectorAll('#segments li')].filter((li) => !li.hidden).length
+  const filtering = !document.querySelector('#filter').hidden
+  const filterWhat = document.querySelector('#filter-what')?.textContent ?? ''
+  const utterances = showing()
+  const editorTabs = [...document.querySelectorAll('.drawer__pane--detail .pane__tab')]
+    .map((b) => b.textContent)
+  // And the filter comes off again, so the rest of the check sees every row.
+  document.querySelector('#filter-clear')?.click()
+  await settle()
+  const cleared = document.querySelector('#filter').hidden
+  // Concatenated, not a template literal: this whole block is one, and a nested
+  // backtick ends it early.
+  const clearedWhy = cleared
+    ? ''
+    : 'bar still says ' + (document.querySelector('#filter-what') || {}).textContent +
+      ', button ' + (document.querySelector('#filter-clear') ? 'is there' : 'is missing')
+  const jumped = showing()
 
   return {
     assigned: assigned.size, chipMenu, headings, movedOne, tabs, listed, mergeText,
-    after: after.size, listedAfter, utterances, jumped,
+    after: after.size, listedAfter, utterances, jumped, editorTabs, filtering, filterWhat, cleared, clearedWhy,
   }
 })()`)
 
@@ -660,15 +686,27 @@ check('the chip menu separates the two scopes', speakers.headings.length === 2, 
 check('one misassigned line can be moved on its own',
   speakers.movedOne?.changed === 1 && speakers.movedOne?.agree === true,
   `${speakers.movedOne?.changed} row changed, and it now matches the one it moved to`)
-check('right-clicking a chip asks about the person', /Show utterances/.test(speakers.chipMenu.join('|')),
+check('right-clicking a chip asks about the person', /Show only their lines/.test(speakers.chipMenu.join('|')),
   speakers.chipMenu.join(' · '))
 check('the drawer has a tab for tags and one for speakers', speakers.tabs.length === 2, speakers.tabs.join(' | '))
 check('listing every speaker', speakers.listed === 2, `${speakers.listed} rows`)
 check('and offering to merge the ticked ones', /^Merge 2 into/.test(speakers.mergeText), speakers.mergeText)
 check('merging leaves one speaker across the transcript', speakers.after === 1, `${speakers.after} distinct chips`)
 check('and one row in the list', speakers.listedAfter === 1)
-check('the other pane lists what they said', speakers.utterances === 2, `${speakers.utterances} utterances`)
-check('and clicking one jumps to it', speakers.jumped === 1)
+// Everything was merged into one speaker two checks ago, so filtering to them
+// is every line -- what is being checked is that the document says it has been
+// narrowed and to whom, not that the number went down.
+check('picking one narrows the transcript to their lines',
+  speakers.filtering && speakers.utterances > 0 && /Ada Lovelace/.test(speakers.filterWhat),
+  `${speakers.utterances} lines, filtered by "${speakers.filterWhat}"`)
+check('and the other pane becomes the place to edit them',
+  speakers.editorTabs.join(' | ') === 'General | Audios', speakers.editorTabs.join(' | '))
+// More lines than the filter showed, not the same: an earlier step took the
+// speaker off one row entirely, and a row belonging to nobody belongs to no
+// speaker's filter either.
+check('the filter comes off again', speakers.cleared && speakers.jumped >= speakers.utterances,
+  `${speakers.utterances} filtered → ${speakers.jumped} lines` +
+    (speakers.clearedWhy ? ' — ' + speakers.clearedWhy : ''))
 
 // "It stays green until something new is dropped" is a claim about a timer that
 // must *not* fire, and the only way to check that is to wait past when the old

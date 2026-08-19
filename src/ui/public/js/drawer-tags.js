@@ -8,47 +8,49 @@
  * that each find half the evidence and neither of which is wrong enough to
  * notice.
  *
- * Picking one lists the lines carrying it, on the right, each of them a click
- * from being played.
- *
  * Tags nest — `pricing/discounts` — and the list is a tree because that is the
- * only way the levels are worth having: clicking `pricing` answers with
- * everything under it, and clicking the sublevel narrows to exactly that. A
- * level nobody tagged directly is still shown, because the first sublevel
- * somebody invents would otherwise make its own parent unreachable.
+ * only way the levels are worth having: clicking `pricing` means everything
+ * under it, and clicking the sublevel narrows to exactly that. A level nobody
+ * tagged directly is still shown, because the first sublevel somebody invents
+ * would otherwise make its own parent unreachable.
+ *
+ * Picking one **filters the transcript** rather than listing its lines here.
+ * The lines belong in the document, in order, with what was said before and
+ * after them — that context is most of what makes a line mean anything, and a
+ * list in a drawer throws it away. Which leaves this half of the drawer for the
+ * vocabulary itself: rename it, merge it by dragging one onto another, forget it.
  */
 
 import { panes } from './drawer.js'
-import { rowsWithTag, tagTree, tagsInRun } from './annotations.js'
-import { utteranceList } from './utterance-list.js'
-import { clock } from './dom.js'
+import { tagTree, tagsInRun } from './annotations.js'
+import { icons } from './icons.js'
 
 /**
  * @param {object} options
- * @param {object} options.transcript
  * @param {{tags: Array<{start: number, tag: string}>}} options.annotations
  * @param {Array<{name: string, uses: number, runs: number}>} options.library
- * @param {string} [options.focus] the tag whose lines are shown
- * @param {(tag: string) => void} options.onFocus
- * @param {(position: number) => void} options.onJump
+ * @param {string} [options.focus] the tag the transcript is filtered to
+ * @param {number} options.matches how many lines that filter is showing
+ * @param {(tag: string|null) => void} options.onFocus
  * @param {(tag: string, event: MouseEvent) => void} [options.onMenu]
  * @param {string} [options.renaming] the tag being typed over, if any
  * @param {(from: string, to: string|null) => void} [options.onRename]
+ * @param {(from: string, into: string) => void} [options.onMerge]
  */
 export function tagsTab({
-  transcript, annotations, library, focus, renaming, onFocus, onJump, onMenu, onRename,
+  annotations, library, focus, renaming, matches = 0, onFocus, onMenu, onRename, onMerge,
 }) {
   const here = tagsInRun(annotations.tags)
   const mine = new Set(here.map((entry) => entry.name))
   const elsewhere = library.filter((entry) => !mine.has(entry.name))
-  // Note the two lists count different things -- utterances here, runs there --
-  // which is why each group is given its own way of describing an entry.
 
   return {
     id: 'tags',
     label: `Tags (${here.length})`,
     mount(body) {
-      const { left, right } = panes(body, { emptyRight: 'Pick a tag to see where it is.' })
+      const { left, right } = panes(body, {
+        emptyRight: 'Pick a tag to filter the transcript. Drag one onto another to merge them.',
+      })
 
       const group = (title, entries, describe, empty) => {
         const heading = document.createElement('p')
@@ -63,7 +65,6 @@ export function tagsTab({
           left.append(nothing)
           return
         }
-
         left.append(branch(tagTree(entries), describe, 0))
       }
 
@@ -77,8 +78,7 @@ export function tagsTab({
           if (entry.path === renaming) {
             // Typed over in place, under the same rules as every other rename
             // on this page: Enter commits, Escape puts it back, clicking away
-            // keeps what was typed. Renaming onto a name that already exists
-            // merges the two, which is the only way to undo a near-duplicate.
+            // keeps what was typed.
             const input = document.createElement('input')
             input.type = 'text'
             input.className = 'taglist__input'
@@ -125,7 +125,44 @@ export function tagsTab({
           count.textContent = describe(entry)
           button.append(count)
 
-          button.addEventListener('click', () => onFocus(entry.path))
+          // Dragging one tag onto another merges them: it is the gesture the
+          // idea already has -- put this in there. The alternative was typing
+          // the target's whole path into a rename box, and for
+          // `deeply/nested/tag` that is exactly the typing that produces a
+          // near-duplicate instead of a merge.
+          if (onMerge && entry.own) {
+            button.draggable = true
+            button.addEventListener('dragstart', (event) => {
+              event.dataTransfer.setData('text/plain', entry.path)
+              event.dataTransfer.effectAllowed = 'move'
+              button.classList.add('is-dragging')
+            })
+            button.addEventListener('dragend', () => button.classList.remove('is-dragging'))
+          }
+          if (onMerge) {
+            const wouldTake = (from) =>
+              // Not onto itself, and not into its own branch: a tag cannot
+              // contain itself, and `a` dropped on `a/b` would try.
+              Boolean(from) && from !== entry.path && !entry.path.startsWith(`${from}/`)
+
+            button.addEventListener('dragover', (event) => {
+              if (!wouldTake(event.dataTransfer.getData('text/plain'))) return
+              event.preventDefault()
+              event.dataTransfer.dropEffect = 'move'
+              button.classList.add('is-target')
+            })
+            button.addEventListener('dragleave', () => button.classList.remove('is-target'))
+            button.addEventListener('drop', (event) => {
+              event.preventDefault()
+              button.classList.remove('is-target')
+              const from = event.dataTransfer.getData('text/plain')
+              if (wouldTake(from)) onMerge(from, entry.path)
+            })
+          }
+
+          // Clicking the tag that is already showing puts the whole transcript
+          // back: the filter is a state, so the button that set it clears it.
+          button.addEventListener('click', () => onFocus(entry.path === focus ? null : entry.path))
           if (onMenu) {
             button.addEventListener('contextmenu', (event) => {
               if (event.shiftKey) return
@@ -143,7 +180,7 @@ export function tagsTab({
       group(
         'In this recording',
         here,
-        // What is under this level, which is what clicking it will answer with.
+        // What is under this level, which is what clicking it will filter to.
         (entry) => String(entry.total),
         'Nothing tagged yet. Click a line to start.',
       )
@@ -159,27 +196,40 @@ export function tagsTab({
 
       if (!focus) return
 
-      const rows = rowsWithTag(transcript.segments, annotations.tags, focus)
-      const entries = rows.map((position) => ({ position, segment: transcript.segments[position] }))
-      const seconds = entries.reduce(
-        (total, entry) => total + (entry.segment.end - entry.segment.start),
-        0,
-      )
-
       const heading = document.createElement('p')
       heading.className = 'aside__name'
       heading.textContent = focus
 
-      const meta = document.createElement('p')
-      meta.className = 'aside__note aside__note--muted'
-      meta.textContent = entries.length
-        ? `${entries.length} utterance${entries.length === 1 ? '' : 's'} here · ${clock(seconds)}`
-        : 'Not used in this recording yet.'
+      const filtered = document.createElement('p')
+      filtered.className = matches ? 'aside__note aside__note--ok' : 'aside__note aside__note--muted'
+      filtered.textContent = matches
+        ? `The transcript is showing the ${matches} line${matches === 1 ? '' : 's'} under this tag.`
+        : 'Nothing in this recording carries it yet.'
 
-      right.replaceChildren(heading, meta)
-      if (entries.length) {
-        right.append(utteranceList(entries, onJump, (segment) => segment.speaker ?? ''))
-      }
+      const actions = document.createElement('div')
+      actions.className = 'drawer__actions'
+
+      const clear = document.createElement('button')
+      clear.type = 'button'
+      clear.className = 'tool'
+      clear.textContent = 'Show every line again'
+      clear.addEventListener('click', () => onFocus(null))
+
+      const rename = document.createElement('button')
+      rename.type = 'button'
+      rename.className = 'tool tool--icon'
+      rename.append(icons.pencil(), document.createTextNode('Rename'))
+      rename.addEventListener('click', () => onRename?.(focus, undefined))
+
+      actions.append(clear, rename)
+
+      const hint = document.createElement('p')
+      hint.className = 'aside__note aside__note--muted'
+      hint.textContent =
+        'Drag a tag onto another to merge them: everything filed under the one you drag moves ' +
+        'to the one you drop it on, sublevels included.'
+
+      right.replaceChildren(heading, filtered, actions, hint)
     },
   }
 }

@@ -153,8 +153,14 @@ export function renderSegments(list, transcript, onSeek, actions = {}) {
     onContext, onSelect, onEdit, onBeginEdit, onSpeaker, onSpeakerMenu,
     onOpen, onSectionCommit, onSectionMenu, onInsertSection,
     sections = [], marks = new Map(), draftSection = null,
+    // Which rows a filter allows, or null for all of them. The rows that are
+    // out stay in the list and are hidden, so every index-based helper --
+    // `markActive`, the jump targets, the selection -- still counts the same
+    // rows as the transcript does.
+    shown = null,
     selected = new Set(), editing = null,
   } = actions
+  const allowed = shown ? new Set(shown) : null
   // Anchored by time, so a section stays on the sentence it was put on even
   // after the rows above it are merged and renumbered.
   const sectionAt = new Map(sections.map((section) => [at(section.start), section]))
@@ -264,6 +270,7 @@ export function renderSegments(list, transcript, onSeek, actions = {}) {
         item.title = 'Corrected by hand'
       }
 
+      if (allowed && !allowed.has(position)) item.hidden = true
       if (selected.has(position)) item.classList.add('is-selected')
 
       // A comment or a tag on a line is invisible until you open it, which

@@ -138,6 +138,20 @@ export function apply(ctx: Context) {
     }
   })
 
+  ctx.serve.route('POST', '/v1/voices/face', async (request) => {
+    const { name: voiceName, emoji, colour } = await body(request)
+    if (typeof voiceName !== 'string' || !voiceName.trim()) throw badRequest('A face needs a `name`.')
+    const store: Context['store'] | undefined = ctx.reflect.get('store')
+    if (!store) throw badRequest('This server has nowhere to keep one.')
+    const set = store.setVoiceFace(
+      voiceName.trim(),
+      typeof emoji === 'string' && emoji.trim() ? emoji.trim().slice(0, 8) : null,
+      typeof colour === 'number' ? colour : null,
+    )
+    if (!set) throw notFound(`No stored voice named ${voiceName}.`)
+    return Response.json({ saved: true, voices: await ctx.voices.list() })
+  })
+
   ctx.serve.route('POST', '/v1/voices/rename', async (request) => {
     const { from, to } = await body(request)
     if (typeof from !== 'string' || typeof to !== 'string' || !to.trim()) {

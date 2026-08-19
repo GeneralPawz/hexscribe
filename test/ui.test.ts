@@ -19,7 +19,7 @@ import { activeIndex } from '../src/ui/public/js/player.js'
 import { estimateSeconds, progressAt, readRtf, recordRtf } from '../src/ui/public/js/progress.js'
 import {
   at as anchor,
-  noteAt,
+  notesAt,
   normaliseTag,
   rowOf,
   rowsWithTag,
@@ -377,15 +377,15 @@ test('comments and tags belong to a line, not to a position', () => {
     { start: 0, tag: 'pricing' },
   ]
 
-  assert.equal(noteAt(notes, 10), 'she hesitated')
-  assert.equal(noteAt(notes, 0), '', 'and a line without one has none, not undefined')
+  assert.deepEqual(notesAt(notes, 10).map((note: { body: string }) => note.body), ['she hesitated'])
+  assert.deepEqual(notesAt(notes, 0), [], 'and a line without one has none, not undefined')
   assert.deepEqual(tagsAt(tags, 10), ['follow up', 'pricing'], 'alphabetical, so the chips do not shuffle')
   assert.deepEqual(tagsAt(tags, 20.005), [])
 
   // The merge case: `b` absorbs `c`, so the third line is gone and the second
   // now runs 10--30. The comment is still on the line that starts at 10.
   const merged = [LINES[0], { start: 10, end: 30, text: 'b c', speaker: 'S1' }]
-  assert.equal(noteAt(notes, merged[1].start), 'she hesitated')
+  assert.deepEqual(notesAt(notes, merged[1].start).map((note: { body: string }) => note.body), ['she hesitated'])
   assert.equal(rowOf(merged, 10), 1)
 })
 

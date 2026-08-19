@@ -227,15 +227,86 @@ export function apply(ctx: Context) {
   })
 
   ctx.serve.route('POST', '/v1/notes', async (request) => {
-    const { runId, start, body: text } = await body(request)
+    const { runId, start, body: text, id } = await body(request)
     if (typeof runId !== 'string') throw badRequest('A comment needs a `runId`.')
     if (typeof start !== 'number') throw badRequest('A comment needs a `start`.')
     if (typeof text !== 'string') throw badRequest('A comment needs a `body`; an empty one clears it.')
-    // An empty comment clears the row rather than storing whitespace, so the
-    // way to undo a comment is to delete its text -- which is what a person
-    // does anyway before wondering where the delete button is.
-    ctx.store.saveNote(runId, start, text)
-    return Response.json({ saved: true, notes: ctx.store.annotations(runId).notes })
+    // An empty comment deletes rather than storing whitespace, so the way to
+    // remove one is to clear its text -- which is what a person does anyway
+    // before wondering where the delete button is.
+    const saved = ctx.store.saveNote(runId, start, text, typeof id === 'number' ? id : undefined)
+    return Response.json({ saved, notes: ctx.store.annotations(runId).notes })
+  })
+
+  ctx.serve.route('POST', '/v1/notes/delete', async (request) => {
+    const { runId, id } = await body(request)
+    if (typeof runId !== 'string' || typeof id !== 'number') {
+      throw badRequest('Deleting a comment needs `runId` and `id`.')
+    }
+    return Response.json({
+      deleted: ctx.store.deleteNote(id),
+      notes: ctx.store.annotations(runId).notes,
+    })
+  })
+
+  /**
+   * Store an edited transcript.
+   *
+   * Merging two utterances, correcting a word, moving a line to another
+   * speaker: all of that lived in the page and nowhere else, so closing the tab
+   * threw it away while the comments written *about* it survived.
+   */
+  ctx.serve.route('POST', '/v1/runs/transcript', async (request) => {
+    const { id, transcript } = await body(request)
+    if (typeof id !== 'string') throw badRequest('Saving a transcript needs an `id`.')
+    const incoming = transcript as {
+      segments?: Array<{ start: number; end: number; text: string; speaker?: string }>
+      text?: string
+      speakers?: string[]
+      voices?: unknown[]
+    }
+    if (!incoming || typeof incoming !== 'object' || !Array.isArray(incoming.segments)) {
+      throw badRequest('Saving a transcript needs a `transcript` with `segments`.')
+    }
+
+    const stored = ctx.store.getRun(id)
+    if (!stored) throw notFound(`No run ${id}.`)
+
+    // Only the parts a person can edit are taken from the request. What the
+    // machine measured -- which engine, which model, how long the audio was,
+    // how fast it ran -- is kept from what is already stored, because the page
+    // holds the *verbose* shape (`duration`, `id` per segment) rather than the
+    // engine's, and a round trip through the browser is no reason for a run to
+    // forget how long it took.
+    const merged = {
+      ...(stored.transcript ?? {
+        engine: stored.engine ?? 'unknown',
+        model: stored.model ?? 'unknown',
+        timing: { audio_seconds: stored.audio_seconds, total_ms: stored.wall_ms, rtf: stored.rtf },
+      }),
+      language: stored.transcript?.language ?? stored.language ?? null,
+      segments: incoming.segments.map((segment, index) => ({
+        index,
+        start: segment.start,
+        end: segment.end,
+        text: segment.text,
+        ...(segment.speaker ? { speaker: segment.speaker } : {}),
+      })),
+      text: incoming.text ?? incoming.segments.map((segment) => segment.text).join(' '),
+      ...(incoming.speakers ? { speakers: incoming.speakers } : {}),
+      ...(incoming.voices ? { voices: incoming.voices } : {}),
+    }
+
+    if (!ctx.store.saveTranscript(id, merged as never)) throw notFound(`No run ${id}.`)
+    const after = ctx.store.getRun(id)
+    return Response.json({ saved: true, segments: after?.segments ?? 0, speakers: after?.speakers ?? 0 })
+  })
+
+  /** Where else a speaker has been heard. */
+  ctx.serve.route('GET', '/v1/speakers/runs', async (request) => {
+    const speaker = new URL(request.url).searchParams.get('name')
+    if (!speaker) throw badRequest('Which speaker? Pass `?name=`.')
+    return Response.json({ runs: ctx.store.runsWithSpeaker(speaker) })
   })
 
   /**

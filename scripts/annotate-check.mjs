@@ -257,13 +257,35 @@ const annotated = await evaluate(`(async () => {
   const title = aside.querySelector('.aside__title')?.textContent
   const quote = aside.querySelector('.aside__quote')?.textContent
 
-  const editor = aside.querySelector('.aside__editor')
-  editor.value = 'she hesitated here'
-  editor.dispatchEvent(new Event('blur'))
-  await settle()
-  await settle()
+  // Comments are a list: the + on the line between them opens an editor, and
+  // the same line can hold several.
+  const write = async (text) => {
+    document.querySelector('#aside .thread .insert').click()
+    await settle()
+    const editor = document.querySelector('#aside .thread textarea')
+    editor.value = text
+    editor.dispatchEvent(new Event('blur'))
+    await settle()
+    await settle()
+  }
+  await write('she hesitated here')
+  await write('and again a minute later')
+  const written = [...document.querySelectorAll('#aside .thread__text')].map((p) => p.textContent)
 
-  const tagField = aside.querySelector('input[aria-label="Add a tag"]')
+  // The speaker of this one line, changed from the panel about that line.
+  const speakerField = document.querySelector('#aside input[aria-label="Speaker"]')
+  const speakerWas = speakerField.value
+  speakerField.value = 'Mara'
+  speakerField.dispatchEvent(new Event('blur'))
+  await settle()
+  await settle()
+  const speakerNow = [...document.querySelectorAll('#segments li')][1].querySelector('.speaker')?.textContent
+
+  const transport = [...document.querySelectorAll('#aside .transport .icon')]
+    .map((b) => b.getAttribute('aria-label'))
+  const rates = [...document.querySelectorAll('#aside .transport__rate option')].map((o) => o.textContent)
+
+  const tagField = document.querySelector('#aside input[aria-label="Add a tag"]')
   const add = async (name) => {
     tagField.value = name
     tagField.dispatchEvent(new Event('input'))
@@ -281,7 +303,7 @@ const annotated = await evaluate(`(async () => {
   // And a sublevel, which is one tag with a level in it rather than two tags.
   await add('pricing/discounts')
 
-  const chips = [...aside.querySelectorAll('.tag--removable')].map((c) => c.textContent.trim())
+  const chips = [...document.querySelectorAll('#aside .tag--removable')].map((c) => c.textContent.trim())
   const annotations = await (await fetch('/v1/annotations?run=' + encodeURIComponent(
     (await (await fetch('/v1/runs')).json()).runs[0].id))).json()
 
@@ -289,6 +311,11 @@ const annotated = await evaluate(`(async () => {
     title,
     quote,
     chips,
+    written,
+    speakerWas,
+    speakerNow,
+    transport,
+    rates,
     marked: document.querySelectorAll('#segments li.is-marked').length,
     notes: annotations.notes,
     tags: annotations.tags,
@@ -297,8 +324,19 @@ const annotated = await evaluate(`(async () => {
 
 check('clicking a line opens it', annotated.title === 'Utterance', annotated.title)
 check('showing what was said there', Boolean(annotated.quote), (annotated.quote ?? '').slice(0, 48))
-check('the comment reaches the database', annotated.notes.length === 1 && /hesitated/.test(annotated.notes[0].body),
-  JSON.stringify(annotated.notes))
+check('a line can hold more than one comment',
+  annotated.written.join(' | ') === 'she hesitated here | and again a minute later',
+  annotated.written.join(' | '))
+check('and both reach the database', annotated.notes.length === 2,
+  annotated.notes.map((note) => note.body).join(' | '))
+check('the panel is a transport for that stretch of audio',
+  annotated.transport.length === 4 && /Play/.test(annotated.transport[0]),
+  annotated.transport.join(', '))
+check('with speeds, and a way to ask for one that is not offered',
+  annotated.rates.join(' ') === '0.75× 1× 1.25× 1.5× 2× Custom…', annotated.rates.join(' '))
+check('the speaker of one line can be changed from its own panel',
+  annotated.speakerWas !== 'Mara' && annotated.speakerNow === 'Mara',
+  `${annotated.speakerWas} → ${annotated.speakerNow}`)
 check('the tags stick, and tagging twice is once',
   annotated.chips.join(', ') === 'follow up, pricing, pricing/discounts', annotated.chips.join(', '))
 check('the server holds three tags for that line', annotated.tags.length === 3,
@@ -318,15 +356,25 @@ const drawer = await evaluate(`(async () => {
   const paths = [...document.querySelectorAll('.taglist .tag')].map((b) => b.dataset.tag)
   const nested = document.querySelectorAll('.taglist--nested .tag').length
 
-  // The branch answers with everything under it...
+  const showing = () => [...document.querySelectorAll('#segments li')].filter((li) => !li.hidden).length
+
+  // Picking a tag narrows the *transcript*: the lines belong in the document,
+  // in order, with what was said around them.
   document.querySelector('.taglist .tag[data-tag="pricing"]').click()
   await settle()
-  const found = [...document.querySelectorAll('.drawer__pane--detail .utterances__row')].length
+  const found = showing()
+  const filterBar = !document.querySelector('#filter').hidden
+  const filterSays = document.querySelector('#filter-count').textContent
 
-  // ...and the sublevel with only its own.
+  // ...and the sublevel narrows to only its own.
   document.querySelector('.taglist .tag[data-tag="pricing/discounts"]').click()
   await settle()
-  const underSublevel = [...document.querySelectorAll('.drawer__pane--detail .utterances__row')].length
+  const underSublevel = showing()
+
+  // Clicking the one already showing puts the whole document back.
+  document.querySelector('.taglist .tag[data-tag="pricing/discounts"]').click()
+  await settle()
+  const restored = showing()
 
   // And the speakers tab, which used to be a panel in the aside.
   ;[...document.querySelectorAll('.drawer__tab')].find((t) => t.textContent.startsWith('Speakers')).click()
@@ -334,11 +382,18 @@ const drawer = await evaluate(`(async () => {
   const speakers = document.querySelectorAll('.drawer__pane--list .speakers__row').length
   document.querySelector('.drawer__pane--list .speakers__meta').click()
   await settle()
-  const said = document.querySelectorAll('.drawer__pane--detail .utterances__row').length
+  await settle()
+  // Picking one filters the transcript to them, and the right half becomes the
+  // place to edit *them*: name, face, and where else they have been heard.
+  const said = showing()
+  const paneTabs = [...document.querySelectorAll('.drawer__pane--detail .pane__tab')].map((b) => b.textContent)
+  const faces = document.querySelectorAll('.drawer__pane--detail .face__option').length
 
   return {
     open: document.body.classList.contains('has-drawer'),
     tabs, groups, tags, found, speakers, said, paths, nested, underSublevel,
+    filterBar, filterSays, restored, paneTabs, faces,
+    rows: document.querySelectorAll('#segments li').length,
   }
 })()`)
 
@@ -399,11 +454,20 @@ check('the tags used here are listed', drawer.tags.includes('pricing') && drawer
 check('the sublevel is shown under its branch', drawer.nested >= 1 &&
   drawer.paths.includes('pricing') && drawer.paths.includes('pricing/discounts'),
   drawer.paths.join(', '))
-check('picking a branch lists everything under it', drawer.found === 1, `${drawer.found} utterances`)
-check('and picking the sublevel narrows to its own',
-  drawer.underSublevel === 1, `${drawer.underSublevel} utterances`)
+check('picking a branch narrows the transcript to everything under it',
+  drawer.found === 1 && drawer.found < drawer.rows, `${drawer.found} of ${drawer.rows} lines`)
+check('and says so above the document', drawer.filterBar && /^1 of [0-9]+ lines$/.test(drawer.filterSays),
+  drawer.filterSays)
+check('the sublevel narrows to its own', drawer.underSublevel === 1,
+  `${drawer.underSublevel} lines`)
+check('and picking it again puts the whole document back',
+  drawer.restored === drawer.rows, `${drawer.restored} of ${drawer.rows}`)
 check('the speakers tab lists the speakers', drawer.speakers >= 1, `${drawer.speakers} speakers`)
-check('and one of them can be read line by line', drawer.said >= 1, `${drawer.said} utterances`)
+check('picking a speaker narrows the transcript to their lines',
+  drawer.said >= 1 && drawer.said < drawer.rows, `${drawer.said} of ${drawer.rows} lines`)
+check('and the other half becomes the place to edit them',
+  drawer.paneTabs.join(' | ') === 'General | Audios' && drawer.faces > 6,
+  `${drawer.paneTabs.join(' | ')} · ${drawer.faces} faces`)
 
 // --- the parts that are easy to get subtly wrong ---
 //
@@ -438,7 +502,7 @@ const survived = await evaluate(`(async () => {
     before,
     marked,
     text: aside.querySelector('.aside__quote')?.textContent,
-    comment: aside.querySelector('.aside__editor')?.value,
+    comment: [...aside.querySelectorAll('.thread__text')].map((p) => p.textContent).join(' | '),
     tags: [...aside.querySelectorAll('.tag--removable')].map((c) => c.textContent.trim()),
   }
 })()`)
@@ -510,6 +574,82 @@ check('removing one takes its band with it', removed.headings.length === 1 && re
 
 await shoot(shotPath)
 
+// --- merging two tags by dragging one onto the other ---
+//
+// The gesture the idea already has: put this in there. The alternative was
+// typing the target's whole path into a rename box, and for a deep branch that
+// is exactly the typing that produces a near-duplicate instead of a merge.
+const dragged = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 400))
+  if (document.querySelector('#drawer').classList.contains('is-open') === false) {
+    document.querySelector('#drawer-handle').click()
+    await settle()
+  }
+  ;[...document.querySelectorAll('.drawer__tab')].find((t) => t.textContent.startsWith('Tags')).click()
+  await settle()
+
+  // Something to drag: a second tag on another line.
+  const rows = [...document.querySelectorAll('#segments li')]
+  rows[2].dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await settle(); await settle()
+  const tagField = document.querySelector('#aside input[aria-label="Add a tag"]')
+  tagField.value = 'loose'
+  tagField.dispatchEvent(new Event('input'))
+  await settle()
+  tagField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  await settle(); await settle()
+  document.querySelector('#aside .aside__close').click()
+  await settle()
+
+  const tag = (path) => document.querySelector('.taglist .tag[data-tag="' + path + '"]')
+  const before = [...document.querySelectorAll('.taglist .tag')].map((b) => b.dataset.tag)
+
+  const carrier = new DataTransfer()
+  tag('loose').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: carrier }))
+  const onto = tag('pricing/discounts')
+  onto.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: carrier }))
+  const highlighted = onto.classList.contains('is-target')
+  onto.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: carrier }))
+  for (let i = 0; i < 6; i++) await settle()
+
+  const after = [...document.querySelectorAll('.taglist .tag')].map((b) => b.dataset.tag)
+  const library = (await (await fetch('/v1/tags')).json()).tags.map((entry) => entry.name)
+  return { before, after, highlighted, library }
+})()`)
+
+check('a tag can be picked up', dragged.before.includes('loose'), dragged.before.join(', '))
+check('the one under the pointer says it would take it', dragged.highlighted)
+check('and dropping merges it in', !dragged.after.includes('loose') && dragged.library.includes('pricing/discounts'),
+  dragged.after.join(', '))
+check('the vocabulary is left with one word instead of two',
+  !dragged.library.includes('loose'), dragged.library.join(', '))
+
+// --- an edit is kept, not just shown ---
+// Everything above is an annotation *about* the transcript. This is the
+// transcript itself: merging two lines used to live in the page and nowhere
+// else, so closing the tab threw away the correction while the comment written
+// about it survived -- which is exactly backwards.
+const editedAway = await evaluate(`(async () => {
+  const settle = () => new Promise((r) => setTimeout(r, 400))
+  const strip = (text) => text.replace(/^[\u2713\s]+/, '').trim()
+  const rows = () => [...document.querySelectorAll('#segments li')]
+  const before = rows().length
+  const last = rows()[rows().length - 1]
+  last.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 300, clientY: 300 }))
+  await settle()
+  ;[...document.querySelectorAll('.menu .menu__item')]
+    .find((b) => strip(b.textContent) === 'Merge up').click()
+  // The save is debounced, so this waits past it rather than racing it.
+  for (let i = 0; i < 6; i++) await settle()
+  const after = rows().length
+  const stored = (await (await fetch('/v1/runs')).json()).runs[0].segments
+  return { before, after, stored }
+})()`)
+check('merging two lines shortens the transcript', editedAway.after === editedAway.before - 1,
+  `${editedAway.before} → ${editedAway.after}`)
+check('and the database is told', editedAway.stored === editedAway.after,
+  `server says ${editedAway.stored}`)
+
 // --- and none of it was only in the page ---
 await send('Page.navigate', { url: uiUrl })
 await sleep(2500)
@@ -527,6 +667,7 @@ const reloaded = await evaluate(`(async () => {
     bands: document.querySelectorAll('.timeline__band').length,
     marked: document.querySelectorAll('#segments li.is-marked').length,
     tags: [...document.querySelectorAll('.taglist .tag')].map((t) => t.dataset.tag),
+    rows: document.querySelectorAll('#segments li').length,
     errors: window.__errors,
   }
 })()`)
@@ -534,8 +675,10 @@ const reloaded = await evaluate(`(async () => {
 check('sections survive a reload', reloaded.headings.join(' | ') === 'Small talk',
   reloaded.headings.join(' | '))
 check('so does the timeline', reloaded.bands === 1, `${reloaded.bands} bands`)
-check('so do the comment and the tags', reloaded.marked === 1 && reloaded.tags.includes('pricing'),
+check('so do the comments and the tags', reloaded.marked >= 1 && reloaded.tags.includes('pricing'),
   `${reloaded.marked} marked · ${reloaded.tags.join(', ')}`)
+check('and so does the edit itself', reloaded.rows === editedAway.after,
+  `${reloaded.rows} lines, and it was ${editedAway.after} when the page was closed`)
 check('no page errors', (reloaded.errors ?? []).length === 0, (reloaded.errors ?? []).join(' | '))
 
 console.log('\nscreenshot: ' + shotPath)

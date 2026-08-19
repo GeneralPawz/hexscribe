@@ -140,6 +140,15 @@
              an hour of flat grey did not already say. -->
         <div id="timeline" class="timeline" aria-label="Sections" hidden></div>
 
+        <!-- Only while the transcript is narrowed to a tag or a speaker. A
+             document showing a fifth of its lines with nothing to say so looks
+             like one that lost the rest. -->
+        <div id="filter" class="filter" hidden>
+          <span id="filter-what" class="filter__what"></span>
+          <span id="filter-count" class="filter__count"></span>
+          <button id="filter-clear" class="tool" type="button">Show every line</button>
+        </div>
+
         <!-- Only present while rows are selected: it belongs to the selection,
              not to the page. -->
         <div id="toolbar" class="toolbar" hidden>

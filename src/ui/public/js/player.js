@@ -65,6 +65,41 @@ export function createPlayer(audio, source) {
       // possible (autoplay policy, decode failure) and is not worth surfacing.
       audio.play().catch(() => {})
     },
+    /** Carry on from wherever the head is. */
+    play() {
+      audio.play().catch(() => {})
+    },
+    pause() {
+      audio.pause()
+    },
+    /**
+     * Stop rather than pause: back to where the thing you were listening to
+     * begins. Pausing keeps your place; stopping is for when you want to hear
+     * it again from the top, which for a transcript is a line.
+     */
+    stop(seconds = 0) {
+      audio.pause()
+      audio.currentTime = Math.max(0, seconds)
+    },
+    /**
+     * How fast, between a quarter speed and five times.
+     *
+     * `preservesPitch` is what makes 0.6 usable on speech: without it a slowed
+     * voice drops an octave and becomes harder to make out rather than easier,
+     * which is the opposite of why anybody reaches for the control.
+     */
+    setRate(value) {
+      const wanted = Math.min(5, Math.max(0.25, Number(value) || 1))
+      audio.preservesPitch = true
+      audio.playbackRate = wanted
+      return wanted
+    },
+    rate() {
+      return audio.playbackRate
+    },
+    at() {
+      return audio.currentTime
+    },
     onTime(callback) {
       audio.addEventListener('timeupdate', () => callback(audio.currentTime))
       audio.addEventListener('seeked', () => callback(audio.currentTime))

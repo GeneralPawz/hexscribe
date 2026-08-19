@@ -6,11 +6,15 @@ import {
   deleteSection,
   deleteTag,
   getAnnotations,
+  setVoiceFace,
+  speakerRuns,
   getTags,
   moveAnnotations,
   renameTag,
+  deleteNote,
   saveNote,
   saveSection,
+  saveTranscript,
   tagUtterance,
   detachAudio,
   getHealth,
@@ -43,8 +47,9 @@ import { renderTimeline, markTime } from './timeline.js'
 import {
   NOTHING,
   at,
-  noteAt,
+  notesAt,
   rowOf,
+  rowsWithTag,
   taggedRows,
   tagsAt,
 } from './annotations.js'
@@ -71,6 +76,7 @@ import { utterancePanel } from './panel-utterance.js'
 import { closeDrawer, isDrawerOpen, mountDrawer, openDrawer, refreshDrawer } from './drawer.js'
 import { tagsTab } from './drawer-tags.js'
 import { speakersTab } from './drawer-speakers.js'
+import { icons } from './icons.js'
 import { downloadPanel } from './panel-download.js'
 import { transcriptPanel } from './panel-transcript.js'
 
@@ -95,6 +101,8 @@ const els = {
   result: $('#result'),
   undo: $('#undo'),
   edited: $('#edited'),
+  filter: $('#filter'),
+  filterClear: $('#filter-clear'),
   toolbar: $('#toolbar'),
   toolbarCount: $('#toolbar-count'),
   mergeSelected: $('#merge-selected'),
@@ -336,6 +344,7 @@ function render() {
     sections: annotations.sections,
     marks: taggedRows(current.segments, annotations),
     draftSection,
+    shown: filteredRows(),
     onSectionCommit: commitSection,
     onInsertSection: beginSection,
     onSectionMenu: (section, event, action) =>
@@ -348,9 +357,28 @@ function render() {
     onMenu: (band, event) => openSectionMenu(band, event),
   })
   renderToolbar()
+  renderFilter()
   refreshDrawer()
   els.undo.disabled = history.length === 0
   show(els.edited, history.length > 0)
+}
+
+/**
+ * A line above the transcript while it is narrowed.
+ *
+ * A document showing a fifth of its lines with nothing to say so is a document
+ * that looks like it lost the rest -- and the reader who scrolls past the end
+ * looking for a line that is filtered out has no way to know why it is gone.
+ */
+function renderFilter() {
+  const bar = els.filter
+  show(bar, Boolean(filter))
+  if (!filter) return
+  const rows = filteredRows() ?? []
+  bar.querySelector('#filter-what').textContent =
+    filter.kind === 'tag' ? `Tagged ${filter.value}` : filter.value
+  bar.querySelector('#filter-count').textContent =
+    `${rows.length} of ${current?.segments.length ?? 0} lines`
 }
 
 /**
@@ -369,6 +397,31 @@ function render() {
 let tagLibrary = []
 /** What the drawer is looking at, so reopening it lands where it was. */
 let drawerFocus = { tag: null, speaker: null }
+/**
+ * The transcript, narrowed to one tag or one speaker.
+ *
+ * Picking a tag used to list its lines inside the drawer. The lines belong in
+ * the document, in order, with what was said before and after them -- that
+ * context is most of what makes a line mean anything, and a list in a drawer
+ * throws it away. So the drawer narrows the transcript instead, and gets its
+ * own half back for editing the tag or the speaker itself.
+ */
+let filter = null
+/** Where else the focused speaker has been heard; null until asked. */
+let speakerHeardIn = null
+/** Which tab of the speaker editor is up. */
+let speakerTab = 'general'
+
+/** The rows the current filter allows, or null when everything is shown. */
+function filteredRows() {
+  if (!filter || !current) return null
+  if (filter.kind === 'tag') return rowsWithTag(current.segments, annotations.tags, filter.value)
+  const rows = []
+  current.segments.forEach((segment, index) => {
+    if (segment.speaker === filter.value) rows.push(index)
+  })
+  return rows
+}
 /** The tag being typed over in the drawer, if any. */
 let renamingTag = null
 
@@ -381,20 +434,29 @@ let renamingTag = null
  */
 function drawerContents() {
   if (!current) return { tabs: [], label: 'Nothing open' }
+  const shown = filteredRows()
   const tabs = [
     tagsTab({
-      transcript: current,
       annotations,
       library: tagLibrary,
       focus: drawerFocus.tag,
       renaming: renamingTag,
+      matches: filter?.kind === 'tag' ? (shown?.length ?? 0) : 0,
       onFocus: (tag) => {
         drawerFocus = { ...drawerFocus, tag }
+        // Picking a tag narrows the document; picking it again widens it.
+        filter = tag ? { kind: 'tag', value: tag } : null
+        render()
         refreshDrawer()
       },
-      onJump: jumpTo,
       onMenu: (tag, event) => openTagMenu(tag, event),
       onRename: async (from, to) => {
+        // `undefined` asks to start typing; a string or null finishes.
+        if (to === undefined) {
+          renamingTag = from
+          refreshDrawer()
+          return
+        }
         renamingTag = null
         if (!to || to === from) {
           refreshDrawer()
@@ -402,39 +464,116 @@ function drawerContents() {
         }
         try {
           await renameTag(from, to)
-          if (drawerFocus.tag === from) drawerFocus = { ...drawerFocus, tag: to }
+          if (drawerFocus.tag === from) {
+            drawerFocus = { ...drawerFocus, tag: to }
+            if (filter?.kind === 'tag' && filter.value === from) filter = { kind: 'tag', value: to }
+          }
           await reloadTags()
         } catch (error) {
           setError(error.message)
           refreshDrawer()
         }
       },
+      onMerge: mergeTags,
     }),
     speakersTab({
       transcript: current,
       focus: drawerFocus.speaker,
+      matches: filter?.kind === 'speaker' ? (shown?.length ?? 0) : 0,
+      editing: drawerFocus.speaker ? speakerEditing(drawerFocus.speaker) : undefined,
       onFocus: (speaker) => {
         drawerFocus = { ...drawerFocus, speaker }
+        speakerHeardIn = null
+        speakerTab = 'general'
+        filter = speaker ? { kind: 'speaker', value: speaker } : null
+        render()
         refreshDrawer()
       },
       onMerge: mergeSpeakersInto,
-      onOpenSpeaker: (speaker) => openSpeakerPanel(speaker),
-      onJump: jumpTo,
     }),
   ]
   return { tabs, label: 'Tags and speakers' }
+}
+
+/** Everything the speaker editor in the drawer needs about one speaker. */
+function speakerEditing(speaker) {
+  const summary = speakerSummary(current.segments).find((entry) => entry.name === speaker) ?? {
+    utterances: 0,
+    seconds: 0,
+  }
+  return {
+    speaker,
+    voice: knownVoices.find((entry) => entry.name === speaker),
+    profile: current.voices?.find((entry) => entry.speaker === speaker),
+    summary,
+    names: [...new Set([...speakerNames(current.segments).filter(Boolean), ...knownVoices.map((v) => v.name)])],
+    faces: new Map(knownVoices.map((voice) => [voice.name, voice])),
+    tab: speakerTab,
+    runs: speakerHeardIn,
+    onTab: (tab) => {
+      speakerTab = tab
+      refreshDrawer()
+      // Asked for once, when the tab is first opened: this is the only question
+      // here that needs the server, and it is not worth a request per repaint.
+      if (tab === 'audios' && speakerHeardIn === null) void loadSpeakerRuns(speaker)
+    },
+    onRename: (name) => renameSpeaker(speaker, name),
+    onFace: async (emoji, colour) => {
+      try {
+        await setVoiceFace(speaker, emoji, colour)
+        await refreshVoices()
+        render()
+        refreshDrawer()
+      } catch (error) {
+        setError(error.message)
+      }
+    },
+    onRemember: () => openSpeakerPanel(speaker),
+    onOpenRun: (id) => void openRun(id),
+  }
+}
+
+async function loadSpeakerRuns(speaker) {
+  try {
+    const answer = await speakerRuns(speaker)
+    speakerHeardIn = answer.runs ?? []
+  } catch {
+    speakerHeardIn = []
+  }
+  refreshDrawer()
+}
+
+/** Fold one tag into another, which is what dropping one on another means. */
+async function mergeTags(from, into) {
+  try {
+    await renameTag(from, into)
+    if (drawerFocus.tag === from) {
+      drawerFocus = { ...drawerFocus, tag: into }
+      if (filter?.kind === 'tag' && filter.value === from) filter = { kind: 'tag', value: into }
+    }
+    await reloadTags()
+  } catch (error) {
+    setError(error.message)
+  }
 }
 
 /** Rename or forget a tag, from the drawer. */
 function openTagMenu(tag, event) {
   openMenu(event.clientX, event.clientY, [
     { heading: tag },
-    { label: 'Show where it is', onSelect: () => {
-      drawerFocus = { ...drawerFocus, tag }
-      refreshDrawer()
-    } },
+    {
+      label: 'Filter the transcript to it',
+      icon: icons.find,
+      onSelect: () => {
+        drawerFocus = { ...drawerFocus, tag }
+        filter = { kind: 'tag', value: tag }
+        render()
+        refreshDrawer()
+      },
+    },
     {
       label: 'Rename everywhere',
+      icon: icons.pencil,
       onSelect: () => {
         renamingTag = tag
         refreshDrawer()
@@ -442,9 +581,12 @@ function openTagMenu(tag, event) {
     },
     {
       label: 'Forget it everywhere',
+      icon: icons.trash,
+      danger: true,
       onSelect: async () => {
         try {
           await deleteTag(tag)
+          if (filter?.kind === 'tag' && filter.value === tag) filter = null
           await reloadTags()
         } catch (error) {
           setError(error.message)
@@ -485,19 +627,46 @@ async function openUtterancePanel(position) {
     .then((answer) => answer.tags ?? [])
     .catch(() => tagLibrary)
 
+  const reopen = () => openUtterancePanel(position)
+
   openAside(
     utterancePanel({
       segment,
-      position,
-      comment: noteAt(annotations.notes, segment.start),
+      speakers: speakerNames(current.segments).filter(Boolean),
+      voices: knownVoices,
+      comments: notesAt(annotations.notes, segment.start),
       tags: tagsAt(annotations.tags, segment.start),
       library: tagLibrary,
       stored: Boolean(runId),
-      onPlay: () => player?.seek(segment.start),
-      onComment: async (bodyText) => {
-        const { notes } = await saveNote(runId, segment.start, bodyText)
+      // The transport works on this line rather than on the recording: play
+      // starts here, stop comes back here. Everything else about the file is
+      // the player's own bar above the transcript.
+      playback: {
+        play: () => player?.seek(segment.start),
+        pause: () => player?.pause(),
+        stop: () => player?.stop(segment.start),
+        replay: () => player?.seek(segment.start),
+        rate: () => player?.rate() ?? 1,
+        setRate: (value) => player?.setRate(value),
+      },
+      onSpeaker: async (name) => {
+        edit(setSpeaker(current.segments, [position], name))
+        if (name) void learnFromAssignment(name, [position])
+        await reopen()
+      },
+      onComment: async (bodyText, id) => {
+        const { notes } = await saveNote(runId, segment.start, bodyText, id)
         annotations = { ...annotations, notes }
         render()
+        // Rebuilt rather than patched in place: the store decides what the
+        // comments are, and the panel is a view of that.
+        await reopen()
+      },
+      onDeleteComment: async (id) => {
+        const { notes } = await deleteNote(runId, id)
+        annotations = { ...annotations, notes }
+        render()
+        await reopen()
       },
       onTag: async (tag, on) => {
         const answer = await tagUtterance(runId, segment.start, tag, on)
@@ -574,10 +743,10 @@ async function removeSection(start) {
 function openSectionMenu(section, event) {
   openMenu(event.clientX, event.clientY, [
     { heading: section.title },
-    { label: 'Go to it', onSelect: () => jumpToTime(section.start) },
-    { label: 'Play from here', disabled: !seekable, onSelect: () => player?.seek(section.start) },
-    { label: 'Rename', onSelect: () => renameSection(section) },
-    { label: 'Remove', onSelect: () => void removeSection(section.start) },
+    { label: 'Go to it', icon: icons.jump, onSelect: () => jumpToTime(section.start) },
+    { label: 'Play from here', icon: icons.play, disabled: !seekable, onSelect: () => player?.seek(section.start) },
+    { label: 'Rename', icon: icons.pencil, onSelect: () => renameSection(section) },
+    { label: 'Remove', icon: icons.trash, danger: true, onSelect: () => void removeSection(section.start) },
   ])
 }
 
@@ -607,7 +776,36 @@ function edit(segments) {
   current = { ...current, segments, text: segments.map((segment) => segment.text).join(' ') }
   render()
   void reanchor()
+  void keep()
   refreshDrawer()
+}
+
+/**
+ * Write the edited transcript back.
+ *
+ * Merging two utterances, correcting a word, moving a line to another speaker:
+ * all of it used to live in the page and nowhere else, so closing the tab threw
+ * it away while the comments written *about* it survived. Which is exactly
+ * backwards -- the correction is the part that took attention.
+ *
+ * Debounced, because an edit is often several in a row (six merges while
+ * tidying a paragraph) and each one would otherwise be a request carrying the
+ * whole transcript.
+ */
+let keeping = null
+async function keep() {
+  if (!runId || !current) return
+  clearTimeout(keeping)
+  keeping = setTimeout(async () => {
+    try {
+      await saveTranscript(runId, current)
+      await refreshRuns()
+    } catch (error) {
+      // Worth saying: the words on screen and the words in the database have
+      // just gone out of step, and only one of them survives a reload.
+      setError(`Could not save the edit: ${error.message}`)
+    }
+  }, 600)
 }
 
 /**
@@ -804,6 +1002,7 @@ function openSpeakerChipMenu(speaker, position, event) {
     { heading: scope },
     ...others.slice(0, 5).map((entry) => ({
       label: `Move to ${short(entry.name)}`,
+      icon: icons.person,
       onSelect: () => {
         edit(setSpeaker(current.segments, targets, entry.name))
         void learnFromAssignment(entry.name, targets)
@@ -811,29 +1010,36 @@ function openSpeakerChipMenu(speaker, position, event) {
     })),
     {
       label: 'Move to a new speaker',
+      icon: icons.plus,
       onSelect: () => edit(setSpeaker(current.segments, targets, nextSpeakerName(current.segments))),
     },
     {
       label: 'Remove the label',
+      icon: icons.cross,
+      danger: true,
       onSelect: () => edit(setSpeaker(current.segments, targets, null)),
     },
 
     { heading: `${short(speaker)} · ${mine?.utterances ?? 0} utterances` },
     {
-      label: 'Show utterances',
+      label: 'Show only their lines',
+      icon: icons.find,
       onSelect: () => openSpeakerBrowser({ focus: speaker }),
     },
     {
       label: 'All speakers',
+      icon: icons.list,
       onSelect: () => openSpeakerBrowser({ focus: speaker }),
     },
     {
       label: 'Name this speaker',
+      icon: icons.pencil,
       onSelect: () => openSpeakerPanel(speaker),
     },
     // Whole-speaker, and it says how many it would take with it.
     ...others.slice(0, 3).map((entry) => ({
       label: `Merge all ${mine?.utterances ?? 0} into ${short(entry.name)}`,
+      icon: icons.merge,
       onSelect: () => {
         const merged = mergeSpeakersInTranscript(current, [speaker], entry.name)
         if (merged === current) return
@@ -938,6 +1144,8 @@ els.mergeSelected.addEventListener('click', () => {
   edit(merged)
 })
 
+els.filterClear.addEventListener('click', () => clearFilter())
+
 els.speakerSelected.addEventListener('click', () => {
   const bounds = els.speakerSelected.getBoundingClientRect()
   openSpeakerMenu(bounds.left, bounds.bottom + 4, [...selectedRows].sort((a, b) => a - b))
@@ -1027,6 +1235,7 @@ function openRowMenu(position, event, textElement) {
       // interpolation the split already does. A timestamp starts an utterance;
       // this starts a sentence in the middle of one.
       label: 'Play from here',
+      icon: icons.play,
       disabled: !seekable,
       onSelect: () => {
         // Right-clicking the empty space past a short line resolves to the end
@@ -1038,11 +1247,13 @@ function openRowMenu(position, event, textElement) {
     },
     {
       label: 'Split here',
+      icon: icons.cross,
       disabled: !canSplit,
       onSelect: () => edit(splitAt(current.segments, position, offset)),
     },
     {
       label: 'Edit text',
+      icon: icons.pencil,
       onSelect: () => {
         editing = position
         selectedRows.clear()
@@ -1064,21 +1275,25 @@ function openRowMenu(position, event, textElement) {
     },
     {
       label: 'Comment and tags…',
+      icon: icons.label,
       onSelect: () => openUtterancePanel(position),
     },
     {
       label: annotations.sections.some((section) => at(section.start) === at(segment.start))
         ? 'Rename this section'
         : 'Start a section here',
+      icon: icons.plus,
       onSelect: () => beginSection(position),
     },
     {
       label: 'Merge up',
+      icon: icons.merge,
       disabled: position === 0,
       onSelect: () => edit(mergeAt(current.segments, position - 1)),
     },
     {
       label: 'Merge down',
+      icon: icons.merge,
       disabled: position >= current.segments.length - 1,
       onSelect: () => edit(mergeAt(current.segments, position)),
     },
@@ -1102,10 +1317,22 @@ document.addEventListener('keydown', (event) => {
     closeDrawer()
     return
   }
-  if (!selectedRows.size) return
-  selectedRows.clear()
-  render()
+  if (selectedRows.size) {
+    selectedRows.clear()
+    render()
+    return
+  }
+  // And last, the filter: it is the widest-reaching of these, so it goes last.
+  if (!filter) return
+  clearFilter()
 })
+
+function clearFilter() {
+  filter = null
+  drawerFocus = { tag: null, speaker: null }
+  render()
+  refreshDrawer()
+}
 
 els.undo.addEventListener('click', () => {
   const previous = history.pop()
@@ -1425,10 +1652,24 @@ async function refreshVoices() {
   knownVoices = await getVoices().catch(() => knownVoices)
 }
 
+/**
+ * The tag vocabulary.
+ *
+ * Asked for with everything else rather than only when a panel that offers tags
+ * opens: the drawer lists "everywhere else" the moment it is pulled, and until
+ * this ran it listed nothing and said there was nothing.
+ */
+async function refreshTags() {
+  tagLibrary = await getTags()
+    .then((answer) => answer.tags ?? [])
+    .catch(() => tagLibrary)
+}
+
 async function refreshRuns() {
   try {
     rail?.setRuns(await getRuns())
     await refreshVoices()
+    await refreshTags()
   } catch {
     // A missing history is not worth an error banner over a working transcript.
   }

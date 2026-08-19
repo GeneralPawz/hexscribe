@@ -102,11 +102,21 @@ export interface Section {
   title: string
 }
 
-/** One comment, against one utterance. */
+/** One comment, against one utterance. There can be several. */
 export interface Note {
+  id: number
   start: number
   body: string
+  created: number
   updated: number
+}
+
+/** A speaker as they appear in one recording. */
+export interface RunSpeaker {
+  run_id: string
+  speaker: string
+  utterances: number
+  seconds: number
 }
 
 /** A tag on one utterance of one run. */
@@ -268,7 +278,12 @@ const SCHEMA = `
     embedding  TEXT NOT NULL,
     seconds    REAL NOT NULL DEFAULT 0,
     recordings INTEGER NOT NULL DEFAULT 1,
-    updated    INTEGER NOT NULL DEFAULT 0
+    updated    INTEGER NOT NULL DEFAULT 0,
+    -- A face for a voice: an emoji and a colour, not an uploaded picture. It
+    -- has to be recognisable in a 20px chip beside a line of text, and at that
+    -- size a photograph is a smudge.
+    emoji      TEXT,
+    colour     INTEGER
   );
 
   -- Sections: chapters over a recording. One starts at an utterance and runs
@@ -283,12 +298,26 @@ const SCHEMA = `
     PRIMARY KEY (run_id, start)
   );
 
-  -- A comment on one utterance.
+  -- Comments on an utterance. Several of them: reading an interview twice
+  -- produces two thoughts about the same line, and a box that could only hold
+  -- one made the second one overwrite the first.
   --
-  -- Anchored to when it was said, not to which row it is. Merging two
-  -- utterances renumbers every one after them, and a note that moved to a
+  -- Anchored to when the line was said, not to which row it is. Merging two
+  -- utterances renumbers every one after them, and a comment that moved to a
   -- different sentence because something above it was tidied up would be worse
-  -- than no note at all.
+  -- than no comment at all.
+  CREATE TABLE IF NOT EXISTS comments (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id  TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+    start   REAL NOT NULL,
+    body    TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS comments_run ON comments (run_id, start);
+
+  -- The one-comment-per-line table this replaced. Kept until its rows have been
+  -- copied across, which happens once, on open.
   CREATE TABLE IF NOT EXISTS notes (
     run_id  TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
     start   REAL NOT NULL,
@@ -296,6 +325,17 @@ const SCHEMA = `
     updated INTEGER NOT NULL,
     PRIMARY KEY (run_id, start)
   );
+
+  -- Who is in which recording, so "where else has this voice been heard" is a
+  -- query rather than a scan of every transcript in the database.
+  CREATE TABLE IF NOT EXISTS run_speakers (
+    run_id     TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+    speaker    TEXT NOT NULL,
+    utterances INTEGER NOT NULL DEFAULT 0,
+    seconds    REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, speaker)
+  );
+  CREATE INDEX IF NOT EXISTS run_speakers_who ON run_speakers (speaker);
 
   -- The tag vocabulary, shared across runs: the point of tagging the second
   -- interview is to find it next to the first one, which cannot happen if every
@@ -368,6 +408,8 @@ export class StoreService extends Service {
     if (orphaned.changes) {
       this.log('warn', `${orphaned.changes} run(s) were interrupted by a restart and can be resumed`)
     }
+
+    this.adoptNotes()
 
     ctx.effect(() => () => this.db.close(), 'store-handle')
   }
@@ -460,6 +502,9 @@ export class StoreService extends Service {
       this.db
         .prepare('INSERT OR REPLACE INTO transcripts (run_id, json) VALUES (?, ?)')
         .run(run.id, JSON.stringify(transcript))
+      // Who is in it, so the voice library can answer "where else have I heard
+      // this person" without reading every transcript in the database.
+      this.recordSpeakers(run.id, transcript)
     }
   }
 
@@ -510,6 +555,74 @@ export class StoreService extends Service {
     }
   }
 
+  /**
+   * Replace a run's transcript with an edited one.
+   *
+   * Merging two utterances, correcting a word, moving a line to another
+   * speaker: all of it used to live in the page and nowhere else, so closing
+   * the tab threw it away. The transcript is cheap to store and expensive to
+   * redo by hand, which is the same argument as for the annotations.
+   *
+   * The counts on the run row are recomputed here rather than trusted from the
+   * caller: they are what the rail lists, and a list that disagrees with the
+   * document it points at is worse than one that is a second out of date.
+   */
+  saveTranscript(id: string, transcript: Transcript): boolean {
+    if (!this.hasRun(id)) return false
+    this.db
+      .prepare(
+        `INSERT INTO transcripts (run_id, json) VALUES (?, ?)
+         ON CONFLICT(run_id) DO UPDATE SET json = excluded.json`,
+      )
+      .run(id, JSON.stringify(transcript))
+
+    const speakers = new Set(
+      transcript.segments.map((segment) => segment.speaker).filter(Boolean) as string[],
+    )
+    this.db
+      .prepare('UPDATE runs SET segments = ?, speakers = ? WHERE id = ?')
+      .run(transcript.segments.length, speakers.size, id)
+    this.recordSpeakers(id, transcript)
+    return true
+  }
+
+  /** Who is in this recording, and how much of it they are. */
+  private recordSpeakers(id: string, transcript: Transcript): void {
+    this.db.prepare('DELETE FROM run_speakers WHERE run_id = ?').run(id)
+    const tally = new Map<string, { utterances: number; seconds: number }>()
+    for (const segment of transcript.segments) {
+      if (!segment.speaker) continue
+      const entry = tally.get(segment.speaker) ?? { utterances: 0, seconds: 0 }
+      entry.utterances += 1
+      entry.seconds += Math.max(0, segment.end - segment.start)
+      tally.set(segment.speaker, entry)
+    }
+    const insert = this.db.prepare(
+      'INSERT INTO run_speakers (run_id, speaker, utterances, seconds) VALUES (?, ?, ?, ?)',
+    )
+    for (const [speaker, entry] of tally) insert.run(id, speaker, entry.utterances, entry.seconds)
+  }
+
+  /**
+   * Every recording a speaker appears in, newest first.
+   *
+   * By the label as it stands in each transcript, which for a named voice is
+   * the name: naming somebody rewrites their label everywhere in that run, so
+   * "where else have I heard this voice" is this query.
+   */
+  runsWithSpeaker(speaker: string): Array<Run & { utterances: number; speaker_seconds: number }> {
+    return this.db
+      .prepare(
+        `SELECT r.*, 0 AS has_audio, 0 AS audio_bytes,
+                s.utterances AS utterances, s.seconds AS speaker_seconds
+         FROM run_speakers s JOIN runs r ON r.id = s.run_id
+         WHERE s.speaker = ?
+         ORDER BY r.created DESC`,
+      )
+      .all(speaker)
+      .map((row) => ({ ...(row as unknown as Run & { utterances: number; speaker_seconds: number }) }))
+  }
+
   deleteRun(id: string): boolean {
     // The audio and transcript go with it: they are of no use to anything else,
     // and leaving them would make "delete this run" a lie.
@@ -518,6 +631,26 @@ export class StoreService extends Service {
     this.db.prepare('DELETE FROM run_segments WHERE run_id = ?').run(id)
     this.db.prepare('DELETE FROM audio WHERE run_id = ?').run(id)
     return result.changes > 0
+  }
+
+  /**
+   * Take the one-comment-per-line rows into the table that holds several.
+   *
+   * Once, recorded in `meta` like every other migration. Somebody's comments
+   * are somebody's reading of an hour of audio; a schema change is not a reason
+   * to lose them.
+   */
+  private adoptNotes(): void {
+    if (this.marked('comments-adopted')) return
+    const rows = this.db
+      .prepare('SELECT run_id, start, body, updated FROM notes')
+      .all() as unknown as Array<{ run_id: string; start: number; body: string; updated: number }>
+    const insert = this.db.prepare(
+      'INSERT INTO comments (run_id, start, body, created, updated) VALUES (?, ?, ?, ?, ?)',
+    )
+    for (const row of rows) insert.run(row.run_id, row.start, row.body, row.updated, row.updated)
+    if (rows.length) this.log('info', `moved ${rows.length} comments into the new table`)
+    this.mark('comments-adopted')
   }
 
   /** Is this run still here? Cheaper than `getRun`, which loads a transcript. */
@@ -616,12 +749,23 @@ export class StoreService extends Service {
    * read whole or not at all, and being able to read the file with any SQLite
    * browser is worth more here than the bytes saved.
    */
-  listVoices(): Array<{ name: string; embedding: number[]; seconds: number; recordings: number }> {
-    const rows = this.db.prepare('SELECT name, embedding, seconds, recordings FROM voices').all() as unknown as Array<{
+  listVoices(): Array<{
+    name: string
+    embedding: number[]
+    seconds: number
+    recordings: number
+    emoji: string | null
+    colour: number | null
+  }> {
+    const rows = this.db
+      .prepare('SELECT name, embedding, seconds, recordings, emoji, colour FROM voices')
+      .all() as unknown as Array<{
       name: string
       embedding: string
       seconds: number
       recordings: number
+      emoji: string | null
+      colour: number | null
     }>
     const out = []
     for (const row of rows) {
@@ -636,15 +780,44 @@ export class StoreService extends Service {
     return out
   }
 
-  saveVoice(voice: { name: string; embedding: number[]; seconds: number; recordings: number }) {
+  saveVoice(voice: {
+    name: string
+    embedding: number[]
+    seconds: number
+    recordings: number
+    emoji?: string | null
+    colour?: number | null
+  }) {
     this.db
       .prepare(
-        `INSERT INTO voices (name, embedding, seconds, recordings, updated) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO voices (name, embedding, seconds, recordings, updated, emoji, colour)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            embedding = excluded.embedding, seconds = excluded.seconds,
-           recordings = excluded.recordings, updated = excluded.updated`,
+           recordings = excluded.recordings, updated = excluded.updated,
+           -- The face is only replaced when one is given: enrolling more speech
+           -- for somebody must not quietly take their picture off.
+           emoji = COALESCE(excluded.emoji, voices.emoji),
+           colour = COALESCE(excluded.colour, voices.colour)`,
       )
-      .run(voice.name, JSON.stringify(voice.embedding), voice.seconds, voice.recordings, Date.now())
+      .run(
+        voice.name,
+        JSON.stringify(voice.embedding),
+        voice.seconds,
+        voice.recordings,
+        Date.now(),
+        voice.emoji ?? null,
+        voice.colour ?? null,
+      )
+  }
+
+  /** Give a voice a face, or take it away. */
+  setVoiceFace(name: string, emoji: string | null, colour: number | null): boolean {
+    return (
+      this.db
+        .prepare('UPDATE voices SET emoji = ?, colour = ?, updated = ? WHERE name = ?')
+        .run(emoji, colour, Date.now(), name).changes > 0
+    )
   }
 
   deleteVoice(name: string): boolean {
@@ -687,7 +860,9 @@ export class StoreService extends Service {
       (this.db.prepare(sql).all(runId) as unknown as T[]).map((row) => ({ ...row }))
     return {
       sections: rows<Section>('SELECT start, title FROM sections WHERE run_id = ? ORDER BY start'),
-      notes: rows<Note>('SELECT start, body, updated FROM notes WHERE run_id = ? ORDER BY start'),
+      notes: rows<Note>(
+        'SELECT id, start, body, created, updated FROM comments WHERE run_id = ? ORDER BY start, id',
+      ),
       tags: rows<UtteranceTag>('SELECT start, tag FROM utterance_tags WHERE run_id = ? ORDER BY start'),
     }
   }
@@ -712,25 +887,46 @@ export class StoreService extends Service {
     )
   }
 
-  /** Write a comment, or clear it: an empty comment is no comment. */
-  saveNote(runId: string, start: number, body: string): boolean {
+  /**
+   * Write a comment on an utterance, or edit one that is already there.
+   *
+   * An empty body deletes rather than storing whitespace: emptying the box is
+   * what somebody does before looking for a delete button.
+   *
+   * @param id the comment being edited; omit to add another one
+   */
+  saveNote(runId: string, start: number, body: string, id?: number): number | false {
     const trimmed = body.trim()
-    if (!trimmed) return this.deleteNote(runId, start)
+    if (!trimmed) {
+      if (id !== undefined) this.deleteNote(id)
+      return false
+    }
     if (!this.hasRun(runId)) return false
+    const now = Date.now()
+    if (id !== undefined) {
+      const changed = this.db
+        .prepare('UPDATE comments SET body = ?, updated = ? WHERE id = ? AND run_id = ?')
+        .run(trimmed, now, id, runId).changes
+      if (changed) return id
+    }
     this.db
-      .prepare(
-        `INSERT INTO notes (run_id, start, body, updated) VALUES (?, ?, ?, ?)
-         ON CONFLICT(run_id, start) DO UPDATE SET body = excluded.body, updated = excluded.updated`,
-      )
-      .run(runId, at(start), trimmed, Date.now())
-    return true
+      .prepare('INSERT INTO comments (run_id, start, body, created, updated) VALUES (?, ?, ?, ?, ?)')
+      .run(runId, at(start), trimmed, now, now)
+    return Number(
+      (this.db.prepare('SELECT last_insert_rowid() AS id').get() as { id: number }).id,
+    )
   }
 
-  deleteNote(runId: string, start: number): boolean {
-    return (
-      this.db.prepare('DELETE FROM notes WHERE run_id = ? AND start = ?').run(runId, at(start))
-        .changes > 0
-    )
+  deleteNote(id: number): boolean {
+    return this.db.prepare('DELETE FROM comments WHERE id = ?').run(id).changes > 0
+  }
+
+  /** Every comment on one utterance, oldest first: they read as a thread. */
+  notesAt(runId: string, start: number): Note[] {
+    return this.db
+      .prepare('SELECT id, start, body, created, updated FROM comments WHERE run_id = ? AND start = ? ORDER BY id')
+      .all(runId, at(start))
+      .map((row) => ({ ...(row as unknown as Note) }))
   }
 
   /**
@@ -751,16 +947,11 @@ export class StoreService extends Service {
     const target = at(to)
     if (source === target) return false
 
-    const moving = this.db
-      .prepare('SELECT body FROM notes WHERE run_id = ? AND start = ?')
-      .get(runId, source) as { body: string } | undefined
-    if (moving) {
-      const existing = this.db
-        .prepare('SELECT body FROM notes WHERE run_id = ? AND start = ?')
-        .get(runId, target) as { body: string } | undefined
-      this.saveNote(runId, target, existing ? `${existing.body}\n\n${moving.body}` : moving.body)
-      this.deleteNote(runId, source)
-    }
+    // The comments simply move: they are separate rows now, so joining two
+    // lines gives the surviving line both sets rather than one glued string.
+    this.db
+      .prepare('UPDATE comments SET start = ? WHERE run_id = ? AND start = ?')
+      .run(target, runId, source)
 
     // `UPDATE OR IGNORE` moves what it can; the leftovers are the ones the
     // target already carried, and a tag applied twice is applied once.
@@ -986,7 +1177,7 @@ export class StoreService extends Service {
       voices: one('SELECT COUNT(*) AS value FROM voices'),
       annotations: one(
         `SELECT (SELECT COUNT(*) FROM sections)
-              + (SELECT COUNT(*) FROM notes)
+              + (SELECT COUNT(*) FROM comments)
               + (SELECT COUNT(*) FROM utterance_tags) AS value`,
       ),
       tags: one('SELECT COUNT(*) AS value FROM tags'),

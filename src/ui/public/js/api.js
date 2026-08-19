@@ -138,9 +138,31 @@ export async function deleteSection(runId, start) {
   return postJson('/v1/sections/delete', { runId, start })
 }
 
-/** An empty body clears the comment; that is how one is removed. */
-export async function saveNote(runId, start, body) {
-  return postJson('/v1/notes', { runId, start, body })
+/**
+ * Write a comment, or edit one. An empty body deletes it, which is how one is
+ * removed -- clearing the text is what somebody does anyway.
+ */
+export async function saveNote(runId, start, body, id) {
+  return postJson('/v1/notes', { runId, start, body, ...(id === undefined ? {} : { id }) })
+}
+
+export async function deleteNote(runId, id) {
+  return postJson('/v1/notes/delete', { runId, id })
+}
+
+/** Keep an edited transcript: merges, corrections, a line moved to somebody else. */
+export async function saveTranscript(id, transcript) {
+  return postJson('/v1/runs/transcript', { id, transcript })
+}
+
+/** Where else a speaker has been heard. */
+export async function speakerRuns(name) {
+  return (await unwrap(await fetch(`/v1/speakers/runs?name=${encodeURIComponent(name)}`))).json()
+}
+
+/** Give a voice a face: an emoji and a colour. */
+export async function setVoiceFace(name, emoji, colour) {
+  return postJson('/v1/voices/face', { name, emoji, colour })
 }
 
 /** Carry annotations across when an edit joined two utterances. */
