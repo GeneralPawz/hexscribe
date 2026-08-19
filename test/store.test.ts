@@ -16,7 +16,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import * as storePlugin from '../src/store.ts'
-import { DEFAULT_SETTINGS, defaultDataDirectory } from '../src/store.ts'
+import { DatabaseSync } from 'node:sqlite'
+import { DEFAULT_SETTINGS, declaredColumns, defaultDataDirectory } from '../src/store.ts'
 import type { Run } from '../src/store.ts'
 import type { Transcript } from '../src/asr.ts'
 
@@ -409,4 +410,75 @@ test('a database written by an older build gains the columns it is missing', asy
   // Closed here, not in a hook: the hook that removes the directory was
   // registered first and so runs first, with the file still open.
   await ctx.root.fiber.dispose()
+})
+
+// --- migrations nobody has to remember to write -------------------------
+
+test('the migration reads what a table should have out of the schema', () => {
+  // The list version of this had one entry in it and was wrong the first time a
+  // column was added to a second table: `voices.emoji` shipped, every database
+  // written before it refused to open, and the message was
+  // `no such column: emoji` at startup.
+  const declared = declaredColumns(`
+    CREATE TABLE IF NOT EXISTS runs (
+      id      TEXT PRIMARY KEY,
+      -- a comment, which is not a column
+      name    TEXT NOT NULL,
+      created INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS runs_created ON runs (created DESC);
+
+    CREATE TABLE IF NOT EXISTS notes (
+      run_id TEXT NOT NULL REFERENCES runs (id) ON DELETE CASCADE,
+      start  REAL NOT NULL,
+      PRIMARY KEY (run_id, start)
+    );
+  `)
+
+  assert.deepEqual(Object.keys(declared), ['runs', 'notes'])
+  assert.deepEqual(Object.keys(declared.runs), ['id', 'name', 'created'])
+  assert.equal(declared.runs.created, 'created INTEGER NOT NULL DEFAULT 0',
+    'the whole definition, because that is what ADD COLUMN wants')
+  assert.deepEqual(Object.keys(declared.notes), ['run_id', 'start'],
+    'a table constraint is not a column called PRIMARY')
+  assert.match(declared.notes.run_id, /REFERENCES runs \(id\)/,
+    'and a column carrying its own brackets survives the split')
+})
+
+test('a database from before a column existed opens anyway', async (t) => {
+  // The real failure, reproduced: a `voices` table in yesterday's shape.
+  // `CREATE TABLE IF NOT EXISTS` does nothing to it, so without the migration
+  // the first query naming the new column throws and the app will not start.
+  const directory = await mkdtemp(join(tmpdir(), 'hexscribe-old-'))
+  const path = join(directory, 'old.db')
+
+  const older = new DatabaseSync(path)
+  older.exec(`
+    CREATE TABLE voices (
+      name       TEXT PRIMARY KEY,
+      embedding  TEXT NOT NULL,
+      seconds    REAL NOT NULL DEFAULT 0,
+      recordings INTEGER NOT NULL DEFAULT 1,
+      updated    INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO voices (name, embedding, seconds, recordings, updated)
+      VALUES ('Mara', '[1,0]', 30, 1, 0);
+  `)
+  older.close()
+
+  const ctx = new Context()
+  await ctx.plugin(storePlugin, { path })
+
+  const voices = ctx.store.listVoices()
+  assert.equal(voices.length, 1, 'the library came through')
+  assert.equal(voices[0].name, 'Mara')
+  assert.equal(voices[0].emoji, null, 'with the new column empty rather than absent')
+  assert.equal(voices[0].colour, null)
+
+  // And it is a real column, not a default in a select.
+  assert.equal(ctx.store.setVoiceFace('Mara', '🎧', 2), true)
+  assert.equal(ctx.store.listVoices()[0].emoji, '🎧')
+
+  await ctx.root.fiber.dispose()
+  await rm(directory, { recursive: true, force: true })
 })

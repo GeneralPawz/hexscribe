@@ -13,6 +13,61 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
+ * The columns each table is declared with, read out of the schema.
+ *
+ * `CREATE TABLE IF NOT EXISTS` does exactly nothing to a table that already
+ * exists, including one missing half its columns -- so a database written by
+ * yesterday's build keeps yesterday's shape, and the first query naming a new
+ * column fails. This is what tells the migration what today's shape is.
+ *
+ * Returns `{table: {column: 'column INTEGER NOT NULL DEFAULT 0'}}` -- the whole
+ * definition, because that is what `ADD COLUMN` wants.
+ */
+export function declaredColumns(schema: string): Record<string, Record<string, string>> {
+  const clean = schema.replace(/--[^\n]*/g, '')
+  const tables: Record<string, Record<string, string>> = {}
+
+  const pattern = /CREATE TABLE IF NOT EXISTS\s+(\w+)\s*\(/gi
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(clean))) {
+    // Scan to the bracket that closes this one: a column can carry its own
+    // parentheses, and a `PRIMARY KEY (a, b)` at the end always does.
+    let depth = 1
+    let index = pattern.lastIndex
+    while (index < clean.length && depth > 0) {
+      if (clean[index] === '(') depth += 1
+      else if (clean[index] === ')') depth -= 1
+      index += 1
+    }
+    const body = clean.slice(pattern.lastIndex, index - 1)
+
+    const columns: Record<string, string> = {}
+    let level = 0
+    let current = ''
+    const finish = () => {
+      const definition = current.trim().replace(/\s+/g, ' ')
+      current = ''
+      if (!definition) return
+      const name = definition.split(/\s/)[0]
+      // Table constraints are not columns, and adding one as though it were
+      // would produce a column called PRIMARY.
+      if (/^(PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)$/i.test(name)) return
+      columns[name] = definition
+    }
+    for (const character of body) {
+      if (character === '(') level += 1
+      if (character === ')') level -= 1
+      if (character === ',' && level === 0) finish()
+      else current += character
+    }
+    finish()
+
+    tables[match[1]] = columns
+  }
+  return tables
+}
+
+/**
  * One tag, tidied: `Pricing / Discounts ` is `Pricing/Discounts`.
  *
  * The levels are trimmed and the empty ones dropped, so a trailing slash or a
@@ -429,19 +484,38 @@ export class StoreService extends Service {
    * migration that deserves to be written down rather than inferred here.
    */
   private migrate() {
-    const wanted: Record<string, Record<string, string>> = {
-      runs: { source_path: 'TEXT' },
-    }
-    for (const [table, columns] of Object.entries(wanted)) {
-      const present = new Set(
-        (this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>).map(
-          (column) => column.name,
-        ),
-      )
-      for (const [column, type] of Object.entries(columns)) {
+    // Read from the schema above rather than from a list kept by hand. The list
+    // version had one entry in it and was wrong the first time a column was
+    // added to a second table: `voices.emoji` shipped, every database written
+    // before it refused to open, and the message was `no such column: emoji` at
+    // startup. A migration nobody has to remember to write is the only kind
+    // that gets written.
+    for (const [table, columns] of Object.entries(declaredColumns(SCHEMA))) {
+      const info = this.db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{
+        name: string
+      }>
+      // No rows means no such table, which `CREATE TABLE IF NOT EXISTS` has
+      // just dealt with; nothing to add to a table that was made this second.
+      if (!info.length) continue
+      const present = new Set(info.map((column) => column.name))
+
+      for (const [column, definition] of Object.entries(columns)) {
         if (present.has(column)) continue
-        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
-        this.log('info', `added column ${table}.${column}`)
+        try {
+          this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`)
+          this.log('info', `added column ${table}.${column}`)
+        } catch (error) {
+          // SQLite refuses a few kinds of added column -- UNIQUE, PRIMARY KEY,
+          // a non-constant default. Saying so beats refusing to start: the app
+          // is still useful without one column, and this says which one.
+          //
+          // stderr as well as the log, because a database that cannot take a
+          // column is a database that is about to fail a query, and the log
+          // table is the first place nobody looks.
+          process.stderr.write(`hexscribe: could not add column ${table}.${column}: ${error}
+`)
+          this.log('error', `could not add column ${table}.${column}: ${error}`)
+        }
       }
     }
   }
